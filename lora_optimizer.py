@@ -99,16 +99,42 @@ _PROFILE_MERGE = os.environ.get("LORA_OPTIMIZER_PROFILE_MERGE", "").strip().lowe
 _SVD_FORCE_CPU = os.environ.get("LORA_OPTIMIZER_SVD_DEVICE", "").strip().lower() == "cpu"
 
 
+def _gram_eigh_svd(mat, q):
+    """Rank-q truncated SVD via the smaller Gram matrix + eigh (raw, no device
+    fallback). Returns (U[:, :q], S[:q], V[:, :q]) like torch.svd_lowrank.
+
+    Why not torch.svd_lowrank or torch.linalg.svd:
+      - torch.svd_lowrank's randomized QR HARD-ABORTS at the C++ level
+        (uncatchable) on some CUDA stacks (Blackwell + torch 2.12/cu130).
+      - torch.linalg.svd is stable there but computes the FULL SVD — crippling
+        on huge layers (Krea 2's 16384-wide MLP) where we only want rank ~96.
+    Gram + eigh is a fast cuBLAS GEMM down to a [min,min] matrix plus an eigh
+    (same family as the eigvalsh the scoring path already runs on cuda here).
+    Gram squares the condition number — fine for low-rank truncation."""
+    M, N = mat.shape[-2], mat.shape[-1]
+    q = max(1, min(int(q), min(M, N)))
+    if M >= N:
+        G = mat.transpose(-2, -1) @ mat            # [N, N]
+        w, V = torch.linalg.eigh(G)                # eigenvalues ascending
+        S = w[-q:].flip(0).clamp_min(0).sqrt()
+        V = V[:, -q:].flip(1)                       # [N, q]
+        U = (mat @ V) / S.clamp_min(1e-12)          # [M, q]
+        return U, S, V
+    G = mat @ mat.transpose(-2, -1)                 # [M, M]
+    w, U = torch.linalg.eigh(G)
+    S = w[-q:].flip(0).clamp_min(0).sqrt()
+    U = U[:, -q:].flip(1)                            # [M, q]
+    V = (mat.transpose(-2, -1) @ U) / S.clamp_min(1e-12)  # [N, q]
+    return U, S, V
+
+
 def _svd_lowrank_safe(mat, q):
-    """Drop-in for torch.svd_lowrank(mat, q) -> (U[:, :q], S[:q], V[:, :q]), but
-    via torch.linalg.svd. torch.svd_lowrank's randomized QR can hard-ABORT at the
-    C++ level ("terminate called" / Fatal Python error: Aborted — uncatchable by
-    try/except, kills the process) on some CUDA stacks (Blackwell + torch
-    2.12/cu130), while torch.linalg.svd runs fine on the very same GPU. Slightly
-    slower at low rank, but none of these call sites are per-candidate hot paths."""
-    q = max(1, min(int(q), min(mat.shape)))
-    U, S, Vh = torch.linalg.svd(mat, full_matrices=False)
-    return U[:, :q], S[:q], Vh[:q, :].mH
+    """Fast, crash-proof drop-in for torch.svd_lowrank(mat, q) -> (U, S, V).
+    Gram+eigh on the input device; CPU retry on a catchable failure."""
+    try:
+        return _gram_eigh_svd(mat, q)
+    except Exception:
+        return _gram_eigh_svd(mat.detach().to("cpu", torch.float32), q)
 
 
 def _merge_profiling_enabled():
@@ -3510,16 +3536,12 @@ class _LoRAMergeBase:
         rank = max(1, min(rank, min_dim))
 
         def _compute(m):
-            # Always torch.linalg.svd (cuSOLVER gesvdj on GPU) — NOT
-            # torch.svd_lowrank. The randomized lowrank path's QR can hard-ABORT
-            # at the C++ level ("terminate called" / Fatal Python error: Aborted,
-            # uncatchable) on some stacks (Blackwell + torch 2.12/cu130), whereas
-            # linalg.svd runs fine on the very same GPU (the extract feature uses
-            # it on cuda). Full SVD truncated is slightly slower at low rank but
-            # this isn't a per-candidate hot path — compression runs in the final
-            # merge / SaveMergedLoRA, not during the sweep.
-            U, S, Vh = torch.linalg.svd(m, full_matrices=False)
-            return U[:, :rank], S[:rank], Vh[:rank, :].T
+            # Gram + eigh truncated SVD — NOT torch.svd_lowrank (randomized QR
+            # hard-aborts on Blackwell/cu130) and NOT a full torch.linalg.svd
+            # (crippling on huge layers like Krea 2's 16384-wide MLP). Fast and
+            # stable; the jitter branch below still uses full linalg.svd as a
+            # last resort for pathological matrices.
+            return _gram_eigh_svd(m, rank)
 
         # The GPU randomized SVD can hard-ABORT (C++ "terminate called", not a
         # Python exception) on some CUDA stacks — uncatchable, kills the process.
