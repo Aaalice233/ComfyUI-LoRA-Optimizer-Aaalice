@@ -978,6 +978,102 @@ class ShapeMismatchReportTests(unittest.TestCase):
 
 
 @unittest.skipIf(torch is None, "torch is not installed in this environment")
+class LoraCleaningTests(unittest.TestCase):
+    """Per-LoRA cleaning primitives: STAR spectral truncate+rescale (nuclear-norm
+    preserving) and base-norm-anchored magnitude taming (Norm-Anchor Scaling)."""
+
+    def setUp(self):
+        self.opt = lora_optimizer.LoRAOptimizer()
+
+    def test_star_eta_100_is_identity(self):
+        d = torch.randn(6, 4)
+        torch.testing.assert_close(self.opt._star_truncate_rescale(d.clone(), 100.0), d)
+
+    def test_star_preserves_nuclear_norm_and_reduces_rank(self):
+        d = torch.diag(torch.tensor([4.0, 3.0, 2.0, 1.0]))  # nuclear norm 10, rank 4
+        out = self.opt._star_truncate_rescale(d.clone(), 70.0)
+        sv = torch.linalg.svdvals(out)
+        self.assertAlmostEqual(sv.sum().item(), 10.0, places=4)   # nuclear norm restored
+        self.assertEqual(int((sv > 1e-4).sum().item()), 2)         # eta=70 keeps 2 of 4
+
+    def test_star_preserves_nuclear_norm_random(self):
+        torch.manual_seed(0)
+        d = torch.randn(8, 5)
+        nuc0 = torch.linalg.svdvals(d).sum().item()
+        out = self.opt._star_truncate_rescale(d.clone(), 50.0)
+        self.assertAlmostEqual(torch.linalg.svdvals(out).sum().item(), nuc0, places=3)
+
+    def test_star_1d_passthrough(self):
+        d = torch.randn(5)
+        torch.testing.assert_close(self.opt._star_truncate_rescale(d.clone(), 50.0), d)
+
+    def test_tame_within_budget_no_scale(self):
+        self.assertEqual(self.opt._tame_scale(2.0, 10.0, 0.3, 1.0), 1.0)  # r=0.2 <= 0.3
+
+    def test_tame_hot_layer_scaled_to_threshold_at_strength_1(self):
+        s = self.opt._tame_scale(5.0, 10.0, 0.3, 1.0)  # r=0.5 > 0.3
+        self.assertAlmostEqual(s, 0.6, places=6)
+        self.assertAlmostEqual(5.0 * s, 0.3 * 10.0, places=6)  # tamed to exactly threshold*base
+
+    def test_tame_strength_0_is_off(self):
+        self.assertEqual(self.opt._tame_scale(5.0, 10.0, 0.3, 0.0), 1.0)
+
+    def test_tame_partial_strength(self):
+        s = self.opt._tame_scale(5.0, 10.0, 0.3, 0.5)
+        self.assertAlmostEqual(s, math.sqrt(0.6), places=6)
+
+    def test_tame_zero_base_norm_floored(self):
+        s = self.opt._tame_scale(1.0, 0.0, 0.3, 1.0)  # denom floored, no div-by-zero
+        self.assertGreater(s, 0.0)
+        self.assertLess(s, 1e-6)
+
+    def _lora_and_model(self, base_scale):
+        # base weight = base_scale*I(4) (norm 2*base_scale); LoRA delta = diag(4,3,2,1)
+        layer = types.SimpleNamespace(weight=torch.eye(4) * base_scale)
+        model = types.SimpleNamespace(model=types.SimpleNamespace(layer=layer))
+        lora = {"layer.lora_up.weight": torch.diag(torch.tensor([4.0, 3.0, 2.0, 1.0])),
+                "layer.lora_down.weight": torch.eye(4)}
+        active = [{"name": "A", "lora": lora, "strength": 1.0, "clip_strength": None,
+                   "key_filter": "all", "conflict_mode": "all"}]
+        tg = {"target_key": "layer.weight", "is_clip": False,
+              "aliases": ["layer"], "label_prefix": "layer"}
+        return active, tg, model
+
+    def _diff(self, active, tg, model):
+        return self.opt._prepare_group_diffs(tg, active, model, None, torch.device("cpu"))["diffs"][0]
+
+    def test_prepare_applies_star(self):
+        active, tg, model = self._lora_and_model(3.0)
+        self.opt._star_eta = 100.0; self.opt._tame_layers = 0.0
+        self.assertEqual(int((torch.linalg.svdvals(self._diff(active, tg, model)) > 1e-4).sum()), 4)
+        self.opt._star_eta = 70.0
+        sv = torch.linalg.svdvals(self._diff(active, tg, model))
+        self.assertEqual(int((sv > 1e-4).sum()), 2)                 # rank reduced
+        self.assertAlmostEqual(sv.sum().item(), 10.0, places=3)     # nuclear norm preserved
+
+    def test_prepare_applies_tame(self):
+        active, tg, model = self._lora_and_model(5.0)  # base norm 10; delta norm sqrt(30)
+        self.opt._star_eta = 100.0; self.opt._tame_layers = 1.0; self.opt._tame_threshold = 0.3
+        self.assertAlmostEqual(self._diff(active, tg, model).norm().item(), 3.0, places=3)  # -> 0.3*base
+
+    def test_prepare_preserve_is_exempt_from_cleaning(self):
+        active, tg, model = self._lora_and_model(5.0)
+        active[0]["preserve"] = True
+        self.opt._star_eta = 50.0; self.opt._tame_layers = 1.0; self.opt._tame_threshold = 0.3
+        out = self._diff(active, tg, model)
+        self.assertEqual(int((torch.linalg.svdvals(out) > 1e-4).sum()), 4)   # untouched
+        self.assertAlmostEqual(out.norm().item(), math.sqrt(30.0), places=3)
+
+    def test_cache_key_folds_cleaning_only_when_active(self):
+        stack = [{"name": "x", "strength": 1.0}]
+        k_off = self.opt._compute_cache_key(stack, 1.0, 1.0, "disabled")
+        k_off2 = self.opt._compute_cache_key(stack, 1.0, 1.0, "disabled", star_eta=100.0, tame_layers=0.0)
+        self.assertEqual(k_off, k_off2)  # default-off must not change the key
+        k_on = self.opt._compute_cache_key(stack, 1.0, 1.0, "disabled", star_eta=40.0)
+        self.assertNotEqual(k_off, k_on)  # active cleaning gets a distinct key
+
+
+@unittest.skipIf(torch is None, "torch is not installed in this environment")
 class PreserveFlagTests(unittest.TestCase):
     """A per-LoRA preserve flag protects a tagged style LoRA from TIES sign-election
     deletion and from sparsification trimming in conflict merges."""
