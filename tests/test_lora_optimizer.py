@@ -1336,7 +1336,8 @@ class LoRASettingsNodeTests(unittest.TestCase):
         settings = result[0]
         expected_keys = {"normalize_keys", "architecture_preset",
                          "auto_strength_floor", "decision_smoothing",
-                         "smooth_slerp_gate", "vram_budget", "cache_patches"}
+                         "smooth_slerp_gate", "vram_budget", "cache_patches",
+                         "star_eta", "tame_layers", "tame_threshold"}
         self.assertEqual(set(settings.keys()), expected_keys)
         self.assertEqual(settings["normalize_keys"], "enabled")
         self.assertEqual(settings["architecture_preset"], "auto")
@@ -1345,6 +1346,10 @@ class LoRASettingsNodeTests(unittest.TestCase):
         self.assertFalse(settings["smooth_slerp_gate"])
         self.assertAlmostEqual(settings["vram_budget"], 0.0)
         self.assertEqual(settings["cache_patches"], "enabled")
+        # per-LoRA cleaning knobs default to no-ops
+        self.assertAlmostEqual(settings["star_eta"], 100.0)
+        self.assertAlmostEqual(settings["tame_layers"], 0.0)
+        self.assertAlmostEqual(settings["tame_threshold"], 0.3)
 
     def test_merge_settings_floor_mode_resolution(self):
         """The mode switch resolves to the same downstream value the old float
