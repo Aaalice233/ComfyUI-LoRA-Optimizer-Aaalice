@@ -893,6 +893,9 @@ WanVideoLoraSelect → WanVideoModelLoader → WANVIDEOMODEL → WanVideo LoRA O
 - KnOTS: [Ramé et al., 2024](https://arxiv.org/abs/2407.09095) — SVD alignment for model merging
 - TALL-masks: [Wang et al., 2024](https://arxiv.org/abs/2406.12832) — selfish weight protection via task-aware masks
 - Column-wise merging inspired by ZipLoRA: [Shah et al., 2025](https://arxiv.org/abs/2311.13600) — structural sparsity for LoRA merging
+- Per-LoRA cleaning (STAR spectral truncate + rescale, base-norm magnitude taming) inspired by [comfyui-lora-loader](https://github.com/CoreyCorza/comfyui-lora-loader) by CoreyCorza — per-LoRA noise-tail removal + layer taming as a preprocessing pass
+- STAR: [Spectral Truncation And Rescale, NAACL 2025](https://arxiv.org/abs/2502.10339) — nuclear-norm-preserving spectral truncation for model merging
+- Norm-Anchor Scaling: [arXiv:2602.02543](https://arxiv.org/abs/2602.02543) — magnitude taming anchored to the base-model reference norm
 
 </details>
 

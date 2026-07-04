@@ -2856,6 +2856,12 @@ class _LoRAMergeBase:
         lines.append("     these layers come only from the other LoRA(s)/base model.")
         return lines
 
+    # --- Per-LoRA cleaning (opt-in Pass-1 preprocessing) ---
+    # Feature inspired by CoreyCorza's comfyui-lora-loader
+    # (https://github.com/CoreyCorza/comfyui-lora-loader): per-LoRA noise-tail
+    # removal + layer taming. Reworked here to research-validated methods — STAR
+    # spectral truncate+rescale (arXiv:2502.10339) and base-norm-anchored
+    # magnitude taming / Norm-Anchor Scaling (arXiv:2602.02543).
     @staticmethod
     def _star_truncate_rescale(diff, eta):
         """STAR spectral truncate + nuclear-norm rescale (arXiv:2502.10339, NAACL 2025).
