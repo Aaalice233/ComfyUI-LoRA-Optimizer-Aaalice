@@ -850,6 +850,18 @@ class TestSingleLoraVirtualPath(unittest.TestCase):
         self.assertTrue(calls[0]["matched"])
 
 
+class TestRegistration(unittest.TestCase):
+    def test_node_registered(self):
+        self.assertIn("LoRAOptimizerInline", lora_optimizer.NODE_CLASS_MAPPINGS)
+        self.assertIs(lora_optimizer.NODE_CLASS_MAPPINGS["LoRAOptimizerInline"],
+                      lora_optimizer.LoRAOptimizerInline)
+        self.assertIn("LoRAOptimizerInline",
+                      lora_optimizer.NODE_DISPLAY_NAME_MAPPINGS)
+        self.assertEqual(
+            lora_optimizer.NODE_DISPLAY_NAME_MAPPINGS["LoRAOptimizerInline"],
+            "LoRA Optimizer (Inline Chain)")
+
+
 def _advanced_settings(**overrides):
     """Full OPTIMIZER_SETTINGS advanced-mode dict with deterministic,
     test-friendly engine knobs (no merge cache, no compression SVD, CPU SVD).

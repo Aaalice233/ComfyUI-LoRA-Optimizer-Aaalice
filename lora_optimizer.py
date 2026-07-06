@@ -9731,11 +9731,12 @@ class LoRAOptimizerInline(LoRAOptimizer):
         """Execution-cache key for the inline node. The inherited
         LoRAOptimizer.IS_CHANGED expects lora_stack and would raise on this
         node's inputs — ComfyUI then treats the node as always-changed and
-        re-merges on every queue press. Key on the upstream patcher state
-        (patches_uuid regenerates on every add_patches, so swapping a LoRA
-        file or strength upstream changes it; an unchanged workflow reuses
-        the same cached patcher objects) plus every CONSULTED widget (slots
-        beyond lora_count don't affect the output) and settings content."""
+        re-merges on every queue press. Keys on every CONSULTED widget (slots
+        beyond lora_count don't affect the output) plus the model/clip
+        patches_uuid and settings content. Note: under live ComfyUI, linked
+        inputs (model/clip/settings) arrive here as None — upstream changes
+        invalidate through the executor's ancestor cache keys instead; the
+        patches_uuid terms matter for harness/direct callers."""
         h = hashlib.sha256()
         h.update(str(getattr(model, "patches_uuid", id(model))).encode())
         clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
@@ -15439,6 +15440,7 @@ NODE_CLASS_MAPPINGS = {
     "LoRAStackDynamic": LoRAStackDynamic,
     "LoRAOptimizer": LoRAOptimizer,
     "LoRAOptimizerSimple": LoRAOptimizerSimple,
+    "LoRAOptimizerInline": LoRAOptimizerInline,
     "SaveMergedLoRA": SaveMergedLoRA,
     "BuildAutoTunerPythonEvaluator": BuildAutoTunerPythonEvaluator,
     "LoRAConflictEditor": LoRAConflictEditor,
@@ -15465,6 +15467,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoRAStackDynamic": "LoRA Stack (Dynamic)",
     "LoRAOptimizer": "LoRA Optimizer (Legacy)",
     "LoRAOptimizerSimple": "LoRA Optimizer",
+    "LoRAOptimizerInline": "LoRA Optimizer (Inline Chain)",
     "SaveMergedLoRA": "Save Merged LoRA",
     "BuildAutoTunerPythonEvaluator": "Build AutoTuner Python Evaluator",
     "LoRAConflictEditor": "LoRA Conflict Editor",
