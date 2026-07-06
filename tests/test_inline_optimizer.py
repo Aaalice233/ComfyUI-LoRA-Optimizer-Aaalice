@@ -11,12 +11,17 @@ import torch
 from tests.test_lora_optimizer import lora_optimizer
 
 
-def _adapter(rank=4, out_dim=8, in_dim=8):
-    """Minimal LoRAAdapter-like payload the engine can expand."""
+def _adapter(rank=4, out_dim=8, in_dim=8, up=None, down=None):
+    """Minimal LoRAAdapter-like payload the engine can expand. Explicit
+    up/down matrices make the expanded diff deterministic (alpha == rank, so
+    the diff is exactly up @ down)."""
+    if up is None:
+        up = torch.randn(out_dim, rank)
+    if down is None:
+        down = torch.randn(rank, in_dim)
     return lora_optimizer.LoRAAdapter(
         loaded_keys=set(),
-        weights=(torch.randn(out_dim, rank), torch.randn(rank, in_dim),
-                 float(rank), None, None, None),
+        weights=(up, down, float(rank), None, None, None),
     )
 
 
@@ -759,6 +764,29 @@ def _realistic_load_lora_for_models(calls):
     return stub
 
 
+def _pipeline_model(patches, applied, dim=16):
+    """Fake ModelPatcher threading the REAL optimize_merge pipeline: a .model
+    with a dim x dim base weight so _resolve_target_shape/_resolve_base_norm
+    work, faithful clone() (copies the CURRENT patch lists, like the real
+    ModelPatcher.clone — so a clone of the stripped clone stays stripped),
+    and an add_patches recorder capturing the merged patches the engine
+    re-applies (plus which patcher received them)."""
+    base = types.SimpleNamespace(
+        layer=types.SimpleNamespace(weight=torch.zeros(dim, dim)))
+
+    def _attach(p):
+        p.model = base
+        p.add_patches = lambda patches_, strength=1.0, strength_clip=None: (
+            applied.update(patches=dict(patches_), strength=strength,
+                           patcher=p),
+            list(patches_.keys()))[1]
+        p.clone = lambda: _attach(
+            _FakePatcher({k: v[:] for k, v in p.patches.items()}))
+        return p
+
+    return _attach(_FakePatcher(patches))
+
+
 class TestSingleLoraVirtualPath(unittest.TestCase):
     """A 1-LoRA chain (or N LoRAs with all but one disabled) must NOT take
     optimize_merge's single-LoRA fast path: load_lora_for_models looks up
@@ -767,22 +795,7 @@ class TestSingleLoraVirtualPath(unittest.TestCase):
     silently lose the LoRA entirely."""
 
     def _fake_model(self, patches, applied):
-        model = _FakePatcher(patches)
-        model.model = types.SimpleNamespace(
-            layer=types.SimpleNamespace(weight=torch.zeros(16, 16)))
-        orig_clone = model.clone
-
-        def clone():
-            c = orig_clone()
-            c.model = model.model
-            c.add_patches = lambda p, strength=1.0, strength_clip=None: (
-                applied.update(patches=dict(p), strength=strength),
-                list(p.keys()))[1]
-            c.clone = clone
-            return c
-
-        model.clone = clone
-        return model
+        return _pipeline_model(patches, applied)
 
     def test_single_virtual_lora_goes_through_pipeline(self):
         key = "layer.weight"
@@ -835,6 +848,128 @@ class TestSingleLoraVirtualPath(unittest.TestCase):
             node.optimize_merge(model, stack, 1.0)
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0]["matched"])
+
+
+def _advanced_settings(**overrides):
+    """Full OPTIMIZER_SETTINGS advanced-mode dict with deterministic,
+    test-friendly engine knobs (no merge cache, no compression SVD, CPU SVD).
+    The settings input is the node's supported surface for engine kwargs —
+    execute_inline deliberately does not forward loose **kwargs to
+    optimize_merge."""
+    settings = {
+        "mode": "advanced",
+        "auto_strength": "disabled", "auto_strength_floor": -1.0,
+        "optimization_mode": "per_prefix",
+        "sparsification": "disabled", "sparsification_density": 0.7,
+        "dare_dampening": 0.0,
+        "merge_strategy_override": "",
+        "merge_refinement": "none", "strategy_set": "full",
+        "normalize_keys": "disabled",
+        "architecture_preset": "dit", "decision_smoothing": 0.25,
+        "smooth_slerp_gate": False,
+        "star_eta": 100.0, "tame_layers": 0.0, "tame_threshold": 0.3,
+        "cache_patches": "disabled", "patch_compression": "disabled",
+        "svd_device": "cpu", "free_vram_between_passes": "disabled",
+        "vram_budget": 0.0,
+    }
+    settings.update(overrides)
+    return settings
+
+
+class TestMultiLoraEndToEnd(unittest.TestCase):
+    """Captured MULTI-LoRA chains through the REAL optimize_merge: two rank-4
+    adapters on the same 16x16 layer key, different loader strengths. The
+    single-LoRA virtual path is covered above; this closes the >= 2-LoRA gap
+    (full Pass 1 conflict analysis + Pass 2 group merge on virtual items)."""
+
+    KEY = "layer.weight"
+
+    @staticmethod
+    def _det_mats(seed_row):
+        """Deterministic full-rank-ish up/down matrices (no randn luck)."""
+        up = torch.linspace(-1.0 + seed_row, 1.0 + seed_row, 16 * 4).reshape(16, 4)
+        down = torch.linspace(0.5 - seed_row, -0.5 + seed_row, 4 * 16).reshape(4, 16)
+        return up, down
+
+    def _run(self, chain, settings=None, **exec_kwargs):
+        applied = {}
+        model = _pipeline_model(_chain_patches(*chain), applied)
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": self.KEY}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            result = node.execute_inline(model, output_strength=1.0,
+                                         settings=settings, **exec_kwargs)
+        out = result["result"] if isinstance(result, dict) else result
+        return model, applied, calls, out
+
+    def test_two_lora_chain_weighted_sum_is_numerically_exact(self):
+        up_a, down_a = self._det_mats(0.0)
+        up_b, down_b = self._det_mats(0.25)
+        chain = (
+            (1.0, {self.KEY: _adapter(up=up_a, down=down_a)}),
+            (0.7, {self.KEY: _adapter(up=up_b, down=down_b)}),
+        )
+        # weighted_sum override makes the expected result exact:
+        # merged = 1.0 * (up_a @ down_a) + 0.7 * (up_b @ down_b)
+        settings = _advanced_settings(optimization_mode="global",
+                                      merge_strategy_override="weighted_sum")
+        model, applied, calls, out = self._run(chain, settings=settings)
+        orig_entries = list(model.patches[self.KEY])
+
+        # (a) report opens with the chain fingerprints, engine report follows
+        report = out[2]
+        self.assertIn("#1: 1 keys, rank 4, loader strength 1.00", report)
+        self.assertIn("#2: 1 keys, rank 4, loader strength 0.70", report)
+        self.assertIn("chain lora #1", report)
+
+        # (b) merged patches re-applied via add_patches on a clone
+        self.assertEqual(calls, [])                      # no fast-path bypass
+        self.assertIn("patches", applied)
+        self.assertIsNot(applied["patcher"], model)
+        self.assertIs(out[0], applied["patcher"])        # patched clone returned
+        self.assertAlmostEqual(applied["strength"], 1.0)
+
+        # (c) the applied patch is the exact weighted combination
+        self.assertEqual(set(applied["patches"]), {self.KEY})
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
+            applied["patches"][self.KEY])
+        expected = up_a @ down_a + 0.7 * (up_b @ down_b)
+        self.assertTrue(torch.allclose(got, expected, atol=1e-5),
+                        f"max err {(got - expected).abs().max().item()}")
+
+        # (d) the original input model still carries its loader entries
+        self.assertEqual(model.patches[self.KEY], orig_entries)
+        self.assertEqual(len(model.patches[self.KEY]), 2)
+
+    def test_conflicting_loras_complete_through_conflict_analysis(self):
+        # Opposite-sign directions built deliberately: B is A negated with a
+        # small deterministic perturbation (near-antiparallel, cos ~ -1) so
+        # the per_prefix conflict path really engages without relying on a
+        # degenerate exactly-antiparallel corner.
+        up_a, down_a = self._det_mats(0.0)
+        down_b = down_a.clone()
+        down_b[0] += 0.05
+        chain = (
+            (1.0, {self.KEY: _adapter(up=up_a, down=down_a)}),
+            (0.7, {self.KEY: _adapter(up=-up_a, down=down_b)}),
+        )
+        model, applied, calls, out = self._run(chain, settings=_advanced_settings())
+
+        self.assertEqual(calls, [])
+        report = out[2]
+        self.assertIn("#1: 1 keys, rank 4, loader strength 1.00", report)
+        self.assertIn("#2: 1 keys, rank 4, loader strength 0.70", report)
+        # merged patches exist and are finite/nonzero for the shared key
+        self.assertEqual(set(applied["patches"]), {self.KEY})
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
+            applied["patches"][self.KEY])
+        self.assertEqual(tuple(got.shape), (16, 16))
+        self.assertTrue(torch.isfinite(got).all())
+        self.assertGreater(got.abs().max().item(), 0.0)
+        # original chain untouched on the input model
+        self.assertEqual(len(model.patches[self.KEY]), 2)
 
 
 if __name__ == "__main__":
