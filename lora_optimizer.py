@@ -9563,7 +9563,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
                        lora_count=3, settings=None, **slot_kwargs):
         model_groups = self._reconstruct_chain_groups(getattr(model, "patches", {}) or {})
         clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
-        clip_groups = (self._reconstruct_chain_groups(clip_patcher.patches)
+        clip_groups = (self._reconstruct_chain_groups(getattr(clip_patcher, "patches", {}) or {})
                        if clip_patcher is not None else [])
 
         if not model_groups and not clip_groups:
@@ -9626,14 +9626,21 @@ class LoRAOptimizerInline(LoRAOptimizer):
                             # Captured entries already carry model-canonical
                             # target keys — never re-normalize them. Pinned
                             # even when a settings node is connected.
-                            normalize_keys="disabled")
+                            normalize_keys="disabled",
+                            # The in-node merge cache can never usefully hit
+                            # for this node (its key folds in id() of the
+                            # fresh stripped clone + the uuid salt), so an
+                            # enabled cache only pins one stale merged-patch
+                            # set in RAM per instance. Pinned off.
+                            cache_patches="disabled")
         autotuner_fallback = False
         if settings is not None and settings.get("mode") == "advanced":
             # Shared mapping with LoRAOptimizerSimple (single source of
-            # truth) — then re-pin normalize_keys, which the settings dict
-            # must never override for captured chain entries.
+            # truth) — then re-pin normalize_keys and cache_patches, which
+            # the settings dict must never override for captured chains.
             merge_kwargs.update(self._advanced_merge_kwargs(settings))
             merge_kwargs["normalize_keys"] = "disabled"
+            merge_kwargs["cache_patches"] = "disabled"
         elif settings is not None:
             # AutoTuner's caches key on file identity, which virtual chain
             # items don't have — v1 falls back to optimizer defaults.
