@@ -5612,6 +5612,38 @@ class LoRAOptimizer(_LoRAMergeBase):
             h.update(f"|clean={star_eta},{tame_layers},{tame_threshold}".encode())
         return h.hexdigest()[:16]
 
+    @staticmethod
+    def _advanced_merge_kwargs(settings):
+        """Map an OPTIMIZER_SETTINGS advanced-mode dict to optimize_merge
+        kwargs. SINGLE SOURCE OF TRUTH shared by LoRAOptimizerSimple and
+        LoRAOptimizerInline — wire new Settings-node options HERE, or one of
+        the two nodes silently falls back to engine defaults. (Inline pins
+        normalize_keys back to "disabled" after applying this mapping:
+        captured chain entries already carry model-canonical target keys.)"""
+        return dict(
+            auto_strength=settings["auto_strength"],
+            auto_strength_floor=settings["auto_strength_floor"],
+            optimization_mode=settings["optimization_mode"],
+            sparsification=settings["sparsification"],
+            sparsification_density=settings["sparsification_density"],
+            dare_dampening=settings["dare_dampening"],
+            merge_strategy_override=settings.get("merge_strategy_override", ""),
+            merge_refinement=settings["merge_refinement"],
+            strategy_set=settings["strategy_set"],
+            normalize_keys=settings["normalize_keys"],
+            architecture_preset=settings["architecture_preset"],
+            decision_smoothing=settings["decision_smoothing"],
+            smooth_slerp_gate=settings["smooth_slerp_gate"],
+            star_eta=settings.get("star_eta", 100.0),
+            tame_layers=settings.get("tame_layers", 0.0),
+            tame_threshold=settings.get("tame_threshold", 0.3),
+            cache_patches=settings["cache_patches"],
+            patch_compression=settings["patch_compression"],
+            svd_device=settings["svd_device"],
+            free_vram_between_passes=settings["free_vram_between_passes"],
+            vram_budget=settings["vram_budget"],
+        )
+
     @classmethod
     def IS_CHANGED(cls, model, lora_stack, output_strength, clip=None,
                    clip_strength_multiplier=1.0, auto_strength="disabled",
@@ -9196,27 +9228,7 @@ class LoRAOptimizerSimple(LoRAOptimizer):
                 return super().optimize_merge(
                     model, lora_stack, output_strength,
                     clip=clip, clip_strength_multiplier=clip_strength_multiplier,
-                    auto_strength=settings["auto_strength"],
-                    auto_strength_floor=settings["auto_strength_floor"],
-                    optimization_mode=settings["optimization_mode"],
-                    sparsification=settings["sparsification"],
-                    sparsification_density=settings["sparsification_density"],
-                    dare_dampening=settings["dare_dampening"],
-                    merge_strategy_override=settings.get("merge_strategy_override", ""),
-                    merge_refinement=settings["merge_refinement"],
-                    strategy_set=settings["strategy_set"],
-                    normalize_keys=settings["normalize_keys"],
-                    architecture_preset=settings["architecture_preset"],
-                    decision_smoothing=settings["decision_smoothing"],
-                    smooth_slerp_gate=settings["smooth_slerp_gate"],
-                    star_eta=settings.get("star_eta", 100.0),
-                    tame_layers=settings.get("tame_layers", 0.0),
-                    tame_threshold=settings.get("tame_threshold", 0.3),
-                    cache_patches=settings["cache_patches"],
-                    patch_compression=settings["patch_compression"],
-                    svd_device=settings["svd_device"],
-                    free_vram_between_passes=settings["free_vram_between_passes"],
-                    vram_budget=settings["vram_budget"],
+                    **self._advanced_merge_kwargs(settings),
                 )
             elif mode == "autotuner":
                 # Free optimizer cache when switching away from advanced mode
@@ -9617,30 +9629,11 @@ class LoRAOptimizerInline(LoRAOptimizer):
                             normalize_keys="disabled")
         autotuner_fallback = False
         if settings is not None and settings.get("mode") == "advanced":
-            # Same mapping as LoRAOptimizerSimple.execute_simple's advanced
-            # branch, minus normalize_keys (stays "disabled", see above).
-            merge_kwargs.update(
-                auto_strength=settings["auto_strength"],
-                auto_strength_floor=settings["auto_strength_floor"],
-                optimization_mode=settings["optimization_mode"],
-                sparsification=settings["sparsification"],
-                sparsification_density=settings["sparsification_density"],
-                dare_dampening=settings["dare_dampening"],
-                merge_strategy_override=settings.get("merge_strategy_override", ""),
-                merge_refinement=settings["merge_refinement"],
-                strategy_set=settings["strategy_set"],
-                architecture_preset=settings["architecture_preset"],
-                decision_smoothing=settings["decision_smoothing"],
-                smooth_slerp_gate=settings["smooth_slerp_gate"],
-                star_eta=settings.get("star_eta", 100.0),
-                tame_layers=settings.get("tame_layers", 0.0),
-                tame_threshold=settings.get("tame_threshold", 0.3),
-                cache_patches=settings["cache_patches"],
-                patch_compression=settings["patch_compression"],
-                svd_device=settings["svd_device"],
-                free_vram_between_passes=settings["free_vram_between_passes"],
-                vram_budget=settings["vram_budget"],
-            )
+            # Shared mapping with LoRAOptimizerSimple (single source of
+            # truth) — then re-pin normalize_keys, which the settings dict
+            # must never override for captured chain entries.
+            merge_kwargs.update(self._advanced_merge_kwargs(settings))
+            merge_kwargs["normalize_keys"] = "disabled"
         elif settings is not None:
             # AutoTuner's caches key on file identity, which virtual chain
             # items don't have — v1 falls back to optimizer defaults.
