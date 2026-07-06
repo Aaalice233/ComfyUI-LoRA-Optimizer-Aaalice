@@ -1,6 +1,5 @@
 """Tests for the inline chain-filter optimizer node."""
 import struct
-import types
 import unittest
 
 import torch
@@ -46,6 +45,22 @@ class TestPatchClassification(unittest.TestCase):
 
     def test_unknown_object_passes_through(self):
         e = _entry(1.0, object())
+        self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
+
+    def test_non_5_tuple_entry_passes_through(self):
+        # older/nonstandard third-party nodes may store short entries — the
+        # classifier must not crash on unpack, just pass them through
+        e = (1.0, _adapter(), 1.0)
+        self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
+
+    def test_padded_diff_passes_through(self):
+        # comfy pads the BASE weight at apply time for this shape — we cannot
+        # faithfully expand it to a bare diff tensor
+        e = _entry(1.0, ("diff", (torch.randn(4, 4), {"pad_weight": True})))
+        self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
+
+    def test_malformed_diff_passes_through(self):
+        e = _entry(1.0, ("diff", None))
         self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
 
 
@@ -136,6 +151,61 @@ class TestChainGroupReconstruction(unittest.TestCase):
         groups = self._reconstruct(patches)
         self.assertEqual(len(groups), 1)
         self.assertEqual(set(groups[0]["entries"]), {"a"})
+
+    def test_empty_patches(self):
+        self.assertEqual(self._reconstruct({}), [])
+
+    def test_non_5_tuple_entry_ignored_without_raising(self):
+        patches = _chain_patches((0.8, {"a": _adapter()}))
+        patches["a"].append((1.0, _adapter(), 1.0))  # nonstandard 3-tuple
+        groups = self._reconstruct(patches)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(set(groups[0]["entries"]), {"a"})
+
+    def test_interleaved_collision_no_fragmentation(self):
+        # Distinct-strength loader X on {a} first, then two interned-strength
+        # loaders B and C both patching {a, b}. The collision sub-gid must be
+        # the per-target-key collision ORDINAL — splitting on the absolute
+        # per-key position fragments this into 4 groups [a],[a,b],[a],[b]
+        # because X shifts the positions on "a" but not on "b".
+        d = struct.unpack("d", struct.pack("d", 0.6))[0]
+        s = 1.0
+        pX = _adapter()
+        pB_a, pB_b = _adapter(), _adapter()
+        pC_a, pC_b = _adapter(), _adapter()
+        patches = {
+            "a": [_entry(d, pX), _entry(s, pB_a), _entry(s, pC_a)],
+            "b": [_entry(s, pB_b), _entry(s, pC_b)],
+        }
+        groups = self._reconstruct(patches)
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(set(groups[0]["entries"]), {"a"})
+        self.assertEqual(set(groups[1]["entries"]), {"a", "b"})
+        self.assertEqual(set(groups[2]["entries"]), {"a", "b"})
+        # ordinal-k entries belong to the k-th colliding call on EVERY key
+        self.assertIs(groups[1]["entries"]["a"], pB_a)
+        self.assertIs(groups[1]["entries"]["b"], pB_b)
+        self.assertIs(groups[2]["entries"]["a"], pC_a)
+        self.assertIs(groups[2]["entries"]["b"], pC_b)
+
+    def test_collision_subgroup_reordered_by_precedence(self):
+        # Chain: two interned-strength calls A, B on "a", then distinct call D
+        # on {z, a}. Dict iteration starts at "z", so D's group is CREATED
+        # first; both collision groups (base + ordinal sub-group) must be
+        # sorted forward past D via the shared-key "a" positions — this
+        # exercises the insertion sort on a collision-created sub-group.
+        s = 1.0
+        d = struct.unpack("d", struct.pack("d", 0.5))[0]
+        pA, pB, pD_a, pD_z = _adapter(), _adapter(), _adapter(), _adapter()
+        patches = {
+            "z": [_entry(d, pD_z)],
+            "a": [_entry(s, pA), _entry(s, pB), _entry(d, pD_a)],
+        }
+        groups = self._reconstruct(patches)
+        self.assertEqual(len(groups), 3)
+        self.assertIs(groups[0]["entries"]["a"], pA)
+        self.assertIs(groups[1]["entries"]["a"], pB)
+        self.assertEqual(set(groups[2]["entries"]), {"z", "a"})
 
 
 class _FakePatcher:

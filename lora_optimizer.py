@@ -2126,12 +2126,21 @@ class _LoRAMergeBase:
         """True if a ModelPatcher patch entry is a plain additive LoRA-family
         application we can merge: adapter object or ("diff", (tensor,)) payload,
         strength_model == 1.0, no custom function. Everything else (OFT/BOFT
-        rotations, "set" payloads, model-merge entries) is passed through."""
+        rotations, "set" payloads, padded/nested diffs, model-merge entries,
+        nonstandard entry shapes) is passed through."""
+        if not isinstance(entry, tuple) or len(entry) != 5:
+            return False  # older/third-party entry shapes — pass through
         strength, payload, strength_model, offset, function = entry
         if function is not None or strength_model != 1.0:
             return False
-        if isinstance(payload, (tuple, list)):
-            return len(payload) == 2 and payload[0] == "diff"
+        if isinstance(payload, tuple):
+            # only the exact ("diff", (tensor,)) shape expands faithfully:
+            # ("diff", (tensor, {"pad_weight": True})) pads the BASE weight at
+            # apply time, and ("diff", None) is malformed — both pass through
+            return (len(payload) == 2 and payload[0] == "diff"
+                    and isinstance(payload[1], tuple) and len(payload[1]) == 1)
+        if isinstance(payload, list):
+            return False  # comfy list payloads = nested composition, not a plain diff
         return isinstance(payload, (LoRAAdapter, LoKrAdapter, LoHaAdapter))
 
     @staticmethod
@@ -2139,12 +2148,14 @@ class _LoRAMergeBase:
         """Reconstruct ordered per-LoRA groups from a ModelPatcher.patches dict.
 
         Grouping: entries from one add_patches call all store the SAME
-        strength_patch PyFloat object, so id(strength) is the group key. A group
-        holding two entries for one target key means two calls shared an
-        interned float — repair by splitting on per-key list position. Keys the
-        colliding calls do NOT share carry no ordering signal at all, so they
-        stay with the first sub-group (deterministic; attribution is genuinely
-        ambiguous there and the report fingerprints let the user verify).
+        strength_patch PyFloat object, so id(strength) is the group key.
+        Repeated same-gid entries on one target key mean calls shared an
+        interned float — repair by splitting on the per-target-key collision
+        ORDINAL (the k-th same-gid entry on any key belongs to the k-th
+        colliding call, because add_patches appends in chain order on every
+        key). Per-key entry order is always preserved; cross-key attribution
+        within an interned-strength collision is best-effort — keys touched by
+        only a subset of the colliding calls may attribute to the wrong call.
         Ordering: chain order, recovered from relative entry positions on shared
         keys (clone() preserves list order; add_patches appends). Groups with no
         shared keys keep first-appearance order (unobservable — report shows
@@ -2159,28 +2170,28 @@ class _LoRAMergeBase:
         """
         by_id = {}
         order_hint = []
+        seen = {}  # (base_gid, target_key) -> occurrence count (collision ordinal)
         for str_key, entry_list in patches.items():
             pos = 0
             for entry in entry_list:
                 if not _LoRAMergeBase._is_capturable_entry(entry):
                     continue
                 strength, payload, _sm, offset, _function = entry
-                gid = id(strength)
+                base_gid = id(strength)
+                target_key = str_key if offset is None else (str_key, offset)
+                # interned-float collision repair: the k-th same-gid entry on
+                # a target key belongs to the k-th colliding call, so the
+                # collision ORDINAL — not the absolute per-key position, which
+                # shifts when other loaders interleave — picks the sub-group.
+                # Ordinal 0 stays with the base gid group on every key.
+                k = seen.get((base_gid, target_key), 0)
+                seen[(base_gid, target_key)] = k + 1
+                gid = base_gid if k == 0 else (base_gid, k)
                 if gid not in by_id:
                     by_id[gid] = {"strength": float(strength), "entries": {},
                                   "captured": [], "_positions": {}}
                     order_hint.append(gid)
-                target_key = str_key if offset is None else (str_key, offset)
                 group = by_id[gid]
-                if target_key in group["entries"]:
-                    # interned-float collision: same "call" twice on one key —
-                    # split into a fresh group (per-key order preserved)
-                    gid = (gid, pos)
-                    if gid not in by_id:
-                        by_id[gid] = {"strength": float(strength), "entries": {},
-                                      "captured": [], "_positions": {}}
-                        order_hint.append(gid)
-                    group = by_id[gid]
                 group["entries"][target_key] = payload
                 group["captured"].append((str_key, entry))
                 group["_positions"][str_key] = pos
