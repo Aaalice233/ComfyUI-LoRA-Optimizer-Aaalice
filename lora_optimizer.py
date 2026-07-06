@@ -2134,6 +2134,80 @@ class _LoRAMergeBase:
         return isinstance(payload, (LoRAAdapter, LoKrAdapter, LoHaAdapter))
 
     @staticmethod
+    def _reconstruct_chain_groups(patches):
+        """Reconstruct ordered per-LoRA groups from a ModelPatcher.patches dict.
+
+        Grouping: entries from one add_patches call all store the SAME
+        strength_patch PyFloat object, so id(strength) is the group key. A group
+        holding two entries for one target key means two calls shared an
+        interned float — repair by splitting on per-key list position. Keys the
+        colliding calls do NOT share carry no ordering signal at all, so they
+        stay with the first sub-group (deterministic; attribution is genuinely
+        ambiguous there and the report fingerprints let the user verify).
+        Ordering: chain order, recovered from relative entry positions on shared
+        keys (clone() preserves list order; add_patches appends). Groups with no
+        shared keys keep first-appearance order (unobservable — report shows
+        fingerprints so the user can verify slot attribution).
+
+        Returns [{"strength": float, "entries": {target_key: payload},
+                  "captured": [(str_key, entry), ...]}, ...]
+        where target_key is str_key or (str_key, offset) matching the tuple-key
+        convention of comfy.lora.load_lora (entries with a non-None function are
+        never capturable, so the 3-tuple form cannot occur here), and "captured"
+        lists the exact entry tuples for later stripping.
+        """
+        by_id = {}
+        order_hint = []
+        for str_key, entry_list in patches.items():
+            pos = 0
+            for entry in entry_list:
+                if not _LoRAMergeBase._is_capturable_entry(entry):
+                    continue
+                strength, payload, _sm, offset, _function = entry
+                gid = id(strength)
+                if gid not in by_id:
+                    by_id[gid] = {"strength": float(strength), "entries": {},
+                                  "captured": [], "_positions": {}}
+                    order_hint.append(gid)
+                target_key = str_key if offset is None else (str_key, offset)
+                group = by_id[gid]
+                if target_key in group["entries"]:
+                    # interned-float collision: same "call" twice on one key —
+                    # split into a fresh group (per-key order preserved)
+                    gid = (gid, pos)
+                    if gid not in by_id:
+                        by_id[gid] = {"strength": float(strength), "entries": {},
+                                      "captured": [], "_positions": {}}
+                        order_hint.append(gid)
+                    group = by_id[gid]
+                group["entries"][target_key] = payload
+                group["captured"].append((str_key, entry))
+                group["_positions"][str_key] = pos
+                pos += 1
+
+        groups = [by_id[g] for g in order_hint]
+
+        def precedes(ga, gb):
+            shared = set(ga["_positions"]) & set(gb["_positions"])
+            if not shared:
+                return None
+            k = next(iter(shared))
+            return ga["_positions"][k] < gb["_positions"][k]
+
+        ordered = []
+        for g in groups:
+            idx = len(ordered)
+            for i, other in enumerate(ordered):
+                if precedes(g, other) is True:
+                    idx = i
+                    break
+            ordered.insert(idx, g)
+
+        for g in ordered:
+            g.pop("_positions", None)
+        return ordered
+
+    @staticmethod
     def _collect_lora_prefixes(active_loras):
         """Collect all LoRA key prefixes from a stack in deterministic order."""
         all_lora_prefixes = set()
