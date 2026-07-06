@@ -23,6 +23,7 @@ import importlib
 import importlib.util
 import concurrent.futures
 import threading
+import uuid
 import folder_paths
 import comfy.utils
 import comfy.sd
@@ -2206,6 +2207,20 @@ class _LoRAMergeBase:
         for g in ordered:
             g.pop("_positions", None)
         return ordered
+
+    @staticmethod
+    def _strip_captured_entries(patcher, groups):
+        """Remove every captured entry from patcher.patches, in place, keeping
+        non-LoRA entries. clone() copies the per-key lists but shares the entry
+        tuples, so identity matching against the captured entries is safe."""
+        captured_ids = {id(entry) for g in groups for (_k, entry) in g["captured"]}
+        new_patches = {}
+        for key, entry_list in patcher.patches.items():
+            kept = [e for e in entry_list if id(e) not in captured_ids]
+            if kept:
+                new_patches[key] = kept
+        patcher.patches = new_patches
+        patcher.patches_uuid = uuid.uuid4()
 
     @staticmethod
     def _collect_lora_prefixes(active_loras):
@@ -13769,7 +13784,6 @@ class MergedLoRAToWanVideo:
             new_model.patches[patch_key] = current
             applied += 1
 
-        import uuid
         new_model.patches_uuid = uuid.uuid4()
 
         logging.info(f"[MergedLoRAToWanVideo] Applied {applied} merged patches "

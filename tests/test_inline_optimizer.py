@@ -138,5 +138,36 @@ class TestChainGroupReconstruction(unittest.TestCase):
         self.assertEqual(set(groups[0]["entries"]), {"a"})
 
 
+class _FakePatcher:
+    """Minimal ModelPatcher stand-in: ordered patch lists + clone()."""
+    def __init__(self, patches=None):
+        self.patches = patches if patches is not None else {}
+        self.patches_uuid = object()
+
+    def clone(self):
+        return _FakePatcher({k: v[:] for k, v in self.patches.items()})
+
+
+class TestStripCaptured(unittest.TestCase):
+    def test_strips_only_captured_entries(self):
+        keep = _entry(1.0, ("set", (torch.zeros(2, 2),)))
+        patches = _chain_patches((0.8, {"a": _adapter(), "b": _adapter()}))
+        patches["a"].append(keep)
+        patcher = _FakePatcher(patches)
+        groups = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(patcher.patches)
+        clone = patcher.clone()
+        lora_optimizer._LoRAMergeBase._strip_captured_entries(clone, groups)
+        self.assertEqual(clone.patches, {"a": [keep]})
+        self.assertEqual(len(patcher.patches["a"]), 2)  # original untouched
+
+    def test_uuid_regenerated(self):
+        patcher = _FakePatcher(_chain_patches((0.8, {"a": _adapter()})))
+        groups = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(patcher.patches)
+        clone = patcher.clone()
+        before = clone.patches_uuid
+        lora_optimizer._LoRAMergeBase._strip_captured_entries(clone, groups)
+        self.assertNotEqual(clone.patches_uuid, before)
+
+
 if __name__ == "__main__":
     unittest.main()
