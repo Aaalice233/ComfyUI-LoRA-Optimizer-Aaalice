@@ -1,6 +1,8 @@
 """Tests for the inline chain-filter optimizer node."""
 import struct
+import types
 import unittest
+import uuid
 
 import torch
 
@@ -364,6 +366,240 @@ class TestChainStackBuild(unittest.TestCase):
         stack = self._build(mg, [], [_slot(), _slot(strength=9.0), _slot(enabled=False)])
         self.assertEqual(len(stack), 1)
         self.assertAlmostEqual(stack[0]["strength"], 0.8)
+
+
+class _FakeCLIP:
+    def __init__(self, patcher):
+        self.patcher = patcher
+        self.cond_stage_model = types.SimpleNamespace()
+
+    def clone(self):
+        return _FakeCLIP(self.patcher.clone())
+
+
+class TestInlineExecute(unittest.TestCase):
+    def _node(self):
+        return lora_optimizer.LoRAOptimizerInline()
+
+    def _model(self, patches):
+        m = _FakePatcher(patches)
+        m.model = types.SimpleNamespace()
+        return m
+
+    @staticmethod
+    def _out(result):
+        return result["result"] if isinstance(result, dict) else result
+
+    def _capture_merge(self, node, seen):
+        """Mock optimize_merge, recording every kwarg + the stack/model."""
+        def fake_merge(m, stack, output_strength, **kw):
+            seen["model"] = m
+            seen["stack"] = stack
+            seen["output_strength"] = output_strength
+            seen.update(kw)
+            return (m, kw.get("clip"), "engine report", None, None)
+        node.optimize_merge = fake_merge
+
+    def test_no_lora_patches_passthrough(self):
+        model = self._model({})
+        node = self._node()
+        result = node.execute_inline(model, output_strength=1.0)
+        out = self._out(result)
+        self.assertIs(out[0], model)          # unchanged object back
+        self.assertIn("No LoRA patches", out[2])
+        self.assertIn("AFTER your Load LoRA nodes", out[2])
+        self.assertIsNone(out[3])
+        self.assertIsNone(out[4])
+
+    def test_merge_called_with_virtual_stack_and_stripped_model(self):
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        node.execute_inline(model, output_strength=1.0)
+        self.assertEqual(len(seen["stack"]), 2)
+        self.assertTrue(all(i["_precomputed_diffs"] for i in seen["stack"]))
+        self.assertEqual(seen["model"].patches, {})   # stripped clone
+        self.assertIsNot(seen["model"], model)
+        self.assertEqual(seen["normalize_keys"], "disabled")
+
+    def test_report_prepends_fingerprints(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter(), "b": _adapter()})))
+        node = self._node()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "engine report", None, None)
+        result = node.execute_inline(model, output_strength=1.0)
+        report = self._out(result)[2]
+        self.assertIn("#1", report)
+        self.assertIn("2 keys", report)
+        self.assertIn("0.80", report)
+        self.assertIn("rank 4", report)
+        self.assertIn("engine report", report)
+
+    def test_disabled_slot_stripped_but_not_merged(self):
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"b": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        node.execute_inline(model, output_strength=1.0, enabled_1=False)
+        self.assertEqual(len(seen["stack"]), 1)
+        self.assertAlmostEqual(seen["stack"][0]["strength"], 0.5)
+        self.assertEqual(seen["model"].patches, {})   # disabled LoRA stripped too
+
+    def test_fingerprint_warns_on_group_count_mismatch(self):
+        # 2 model groups vs 1 clip group (both non-empty) -> order-attribution
+        # warning naming the usual suspects
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"b": _adapter()})))
+        clip = _FakeCLIP(_FakePatcher(_chain_patches((0.6, {"te.a": _adapter()}))))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        result = node.execute_inline(model, output_strength=1.0, clip=clip)
+        report = self._out(result)[2]
+        self.assertIn("2 model-side vs 1 clip-side", report)
+        self.assertIn("LoraLoaderModelOnly", report)
+        # the clip clone passed to the engine is stripped, original untouched
+        self.assertIsNot(seen["clip"], clip)
+        self.assertEqual(seen["clip"].patcher.patches, {})
+        self.assertEqual(len(clip.patcher.patches["te.a"]), 1)
+
+    def test_fingerprint_counts_passthrough_entries(self):
+        patches = _chain_patches((0.8, {"a": _adapter()}))
+        patches["a"].append(_entry(1.0, ("set", (torch.zeros(2, 2),))))
+        model = self._model(patches)
+        node = self._node()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
+        result = node.execute_inline(model, output_strength=1.0)
+        report = self._out(result)[2]
+        self.assertIn("1 non-LoRA", report)
+        self.assertIn("passed through untouched", report)
+
+    def test_no_passthrough_note_when_all_captured(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
+        report = self._out(node.execute_inline(model, output_strength=1.0))[2]
+        self.assertNotIn("non-LoRA", report)
+
+    def test_fingerprint_notes_fewer_slots_than_loras(self):
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"b": _adapter()})))
+        node = self._node()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
+        report = self._out(node.execute_inline(
+            model, output_strength=1.0, lora_count=1))[2]
+        self.assertIn("2 LoRAs detected but only 1 option slot", report)
+        self.assertIn("default options", report)
+
+    def test_fingerprint_notes_more_slots_than_loras(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
+        report = self._out(node.execute_inline(
+            model, output_strength=1.0, lora_count=3))[2]
+        self.assertIn("3 option slots but only 1 LoRA", report)
+        self.assertIn("extra slots ignored", report)
+
+    def test_autotuner_settings_fall_back_to_defaults(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        result = node.execute_inline(model, output_strength=1.0,
+                                     settings={"mode": "autotuner", "top_n": 3})
+        report = self._out(result)[2]
+        self.assertIn("AutoTuner settings are not supported inline", report)
+        self.assertNotIn("top_n", seen)                      # defaults used
+        self.assertEqual(seen["normalize_keys"], "disabled")
+
+    def test_advanced_settings_delegated_normalize_keys_pinned(self):
+        settings = {
+            "mode": "advanced",
+            "auto_strength": "disabled", "auto_strength_floor": 0.5,
+            "optimization_mode": "global",
+            "sparsification": "dare", "sparsification_density": 0.5,
+            "dare_dampening": 0.1,
+            "merge_refinement": "refine", "strategy_set": "basic",
+            "normalize_keys": "enabled",   # must NOT reach the engine
+            "architecture_preset": "dit", "decision_smoothing": 0.1,
+            "smooth_slerp_gate": True,
+            "star_eta": 0.9, "tame_layers": 0.1, "tame_threshold": 0.2,
+            "cache_patches": "disabled", "patch_compression": "disabled",
+            "svd_device": "cpu", "free_vram_between_passes": "enabled",
+            "vram_budget": 0.25,
+        }
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        result = node.execute_inline(model, output_strength=1.0, settings=settings)
+        report = self._out(result)[2]
+        self.assertNotIn("not supported inline", report)
+        self.assertEqual(seen["normalize_keys"], "disabled")  # pinned
+        self.assertEqual(seen["optimization_mode"], "global")
+        self.assertEqual(seen["sparsification"], "dare")
+        self.assertAlmostEqual(seen["sparsification_density"], 0.5)
+        self.assertEqual(seen["cache_patches"], "disabled")
+        self.assertEqual(seen["svd_device"], "cpu")
+        self.assertAlmostEqual(seen["star_eta"], 0.9)
+
+    def test_salt_names_differ_across_source_patchers(self):
+        # Two DIFFERENT loader chains at identical strengths must yield
+        # different virtual item names, or optimize_merge's in-node cache
+        # would false-hit when the user swaps a LoRA file.
+        names_per_run = []
+        for _ in range(2):
+            model = self._model(_chain_patches(
+                (0.8, {"a": _adapter()}), (0.5, {"b": _adapter()})))
+            model.patches_uuid = uuid.uuid4()
+            node = self._node()
+            seen = {}
+            self._capture_merge(node, seen)
+            node.execute_inline(model, output_strength=1.0)
+            names_per_run.append([i["name"] for i in seen["stack"]])
+        self.assertNotEqual(names_per_run[0], names_per_run[1])
+        for names in names_per_run:
+            self.assertTrue(names[0].startswith("chain lora #1"))
+            self.assertTrue(names[1].startswith("chain lora #2"))
+
+    def test_salt_names_stable_for_same_patcher(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        model.patches_uuid = uuid.uuid4()
+        node = self._node()
+        names_per_run = []
+        def fake_merge(m, stack, o, **kw):
+            names_per_run.append([i["name"] for i in stack])
+            return (m, None, "r", None, None)
+        node.optimize_merge = fake_merge
+        node.execute_inline(model, output_strength=1.0)
+        node.execute_inline(model, output_strength=1.0)
+        self.assertEqual(names_per_run[0], names_per_run[1])
+
+    def test_input_types_surface(self):
+        cls = lora_optimizer.LoRAOptimizerInline
+        it = cls.INPUT_TYPES()
+        req, opt = it["required"], it["optional"]
+        # widgets the user types/toggles live in "required" (optional widget
+        # inputs render as sockets in some frontends); JS control widgets
+        # must all be present and required
+        for w in ("model", "settings_visibility", "lora_count",
+                  "output_strength", "clip_strength_multiplier"):
+            self.assertIn(w, req)
+        for i in (1, cls.MAX_LORAS):
+            for base in ("enabled", "strength", "model_strength",
+                         "clip_strength", "conflict_mode", "key_filter",
+                         "preserve"):
+                self.assertIn(f"{base}_{i}", req)
+        # genuine node-to-node wires stay optional
+        self.assertIn("clip", opt)
+        self.assertIn("settings", opt)
+        self.assertEqual(cls.FUNCTION, "execute_inline")
+        # inherited from LoRAOptimizer — lora_data keeps SaveMergedLoRA working
+        self.assertEqual(cls.RETURN_TYPES,
+                         ("MODEL", "CLIP", "STRING", "TUNER_DATA", "LORA_DATA"))
+        self.assertNotIn("RETURN_TYPES", vars(cls))   # not redeclared
 
 
 if __name__ == "__main__":

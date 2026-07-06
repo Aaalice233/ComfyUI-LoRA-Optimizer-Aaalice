@@ -9333,14 +9333,125 @@ class LoRAOptimizerInline(LoRAOptimizer):
         "preserve": False,
     }
 
+    @classmethod
+    def INPUT_TYPES(cls):
+        # Widget inputs live in "required": optional widget-type inputs render
+        # as input SOCKETS (not editable fields) in some frontends. Only
+        # genuine node-to-node wires (CLIP, OPTIMIZER_SETTINGS) go in
+        # "optional". clip_strength_multiplier is a required widget so the JS
+        # control-widget count stays predictable.
+        inputs = {
+            "required": {
+                "model": ("MODEL", {
+                    "tooltip": "Model coming out of your regular Load LoRA chain. "
+                               "The optimizer reads the LoRA patches on it, merges "
+                               "them, and re-applies the result."
+                }),
+                "settings_visibility": (["simple", "advanced"], {
+                    "tooltip": "Simple: one strength multiplier per LoRA. "
+                               "Advanced: separate model/clip multipliers, conflict mode, "
+                               "key filter, and preserve per LoRA."
+                }),
+                "lora_count": ("INT", {
+                    "default": 3, "min": 1, "max": cls.MAX_LORAS, "step": 1,
+                    "tooltip": "How many option slots to show. Slot #1 = first Load LoRA "
+                               "in the chain (closest to the checkpoint)."
+                }),
+                "output_strength": ("FLOAT", {
+                    "default": 1.0, "min": -1.0, "max": 10.0, "step": 0.05,
+                    "tooltip": "Master volume for the merged result. 1.0 = full effect, "
+                               "0.5 = half. Set to -1 for auto: the optimizer picks a "
+                               "good strength for you."
+                }),
+                "clip_strength_multiplier": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 10.0, "step": 0.05,
+                    "tooltip": "How strongly LoRAs affect text understanding. At 1.0, "
+                               "same strength as the model. Lower values reduce LoRA "
+                               "influence on prompts while keeping the visual effect."
+                }),
+            },
+            "optional": {
+                "clip": ("CLIP", {
+                    "tooltip": "CLIP from the same loader chain, so text-encoder "
+                               "patches are merged too."
+                }),
+                "settings": ("OPTIMIZER_SETTINGS", {
+                    "tooltip": "Optimizer Settings node for full control (advanced "
+                               "mode). AutoTuner mode is not supported inline."
+                }),
+            },
+        }
+        for i in range(1, cls.MAX_LORAS + 1):
+            inputs["required"][f"enabled_{i}"] = ("BOOLEAN", {
+                "default": True,
+                "tooltip": f"Off: LoRA #{i} is removed from the model entirely "
+                           f"(not merged, not applied)."
+            })
+            inputs["required"][f"strength_{i}"] = ("FLOAT", {
+                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
+                "tooltip": f"Multiplier on the strength LoRA #{i}'s loader set "
+                           f"(1.0 = keep as loaded)."
+            })
+            inputs["required"][f"model_strength_{i}"] = ("FLOAT", {
+                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
+                "tooltip": f"Multiplier on LoRA #{i}'s loader strength for image "
+                           f"generation (visual style, composition). 1.0 = keep as loaded."
+            })
+            inputs["required"][f"clip_strength_{i}"] = ("FLOAT", {
+                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
+                "tooltip": f"Multiplier on LoRA #{i}'s loader strength for text "
+                           f"understanding (prompt interpretation). 1.0 = keep as loaded."
+            })
+            inputs["required"][f"conflict_mode_{i}"] = (["all", "low_conflict", "high_conflict"], {
+                "default": "all",
+                "tooltip": f"LoRA #{i} conflict filter. "
+                           f"'all': apply everywhere (default). "
+                           f"'low_conflict': only where this LoRA agrees with the majority. "
+                           f"'high_conflict': only where this LoRA disagrees."
+            })
+            inputs["required"][f"key_filter_{i}"] = (
+                ["all", "shared_only", "unique_only", "audio_only", "no_audio"], {
+                "default": "all",
+                "tooltip": f"LoRA #{i} key filter. "
+                           f"'all': contribute all keys (default). "
+                           f"'shared_only': only keys present in 2+ LoRAs. "
+                           f"'unique_only': only keys present in exactly 1 LoRA. "
+                           f"'audio_only': only audio layers (LTX-2 / ACE-Step). "
+                           f"'no_audio': only non-audio (video) layers."
+            })
+            inputs["required"][f"preserve_{i}"] = ("BOOLEAN", {
+                "default": False,
+                "tooltip": f"Mark LoRA #{i} as a STYLE LoRA to protect it in conflict merges. "
+                           f"When on, it is never trimmed by sparsification and is exempt from "
+                           f"TIES sign-election (which deletes a style's minority-sign direction) "
+                           f"— its full contribution is added on top of the conflict-resolved merge. "
+                           f"Use when a style LoRA keeps disappearing when merged with a content LoRA."
+            })
+        return inputs
+
+    # RETURN_TYPES / RETURN_NAMES / CATEGORY inherited from LoRAOptimizer:
+    # (MODEL, CLIP, STRING, TUNER_DATA, LORA_DATA) — lora_data keeps
+    # SaveMergedLoRA chaining working.
+    FUNCTION = "execute_inline"
+    DESCRIPTION = ("Drop-in filter: place after a chain of regular Load LoRA nodes. "
+                   "Reads their LoRA patches off the model, merges them with the "
+                   "optimizer engine, strips the originals, and applies the merged "
+                   "result. Slot #1 = first loader in the chain.")
+
     @staticmethod
-    def _chain_groups_to_stack(model_groups, clip_groups, slots, visibility):
+    def _chain_groups_to_stack(model_groups, clip_groups, slots, visibility,
+                               name_salt=""):
         """
         Build virtual stack items (the _model_to_virtual_lora schema) from
         ordered chain groups.  Model and clip groups pair by chain order:
         one loader call patches both branches, so model group i and clip
         group i come from the same LoRA.  Slot i applies to chain LoRA i;
         missing slots use defaults, extra slots are ignored.
+
+        name_salt is appended to every item name.  execute_inline passes a
+        digest of the source patcher state so that two different LoRA files
+        loaded at identical strengths cannot produce identical stack
+        signatures and false-hit optimize_merge's in-node merge cache.
 
         Slot strengths are MULTIPLIERS on the loader's captured strength.
         With visibility "simple" the single `strength` multiplier applies
@@ -9391,7 +9502,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 # honest record of the user's choice.
                 strength = model_val
             items.append({
-                "name": f"chain lora #{i + 1}",
+                "name": f"chain lora #{i + 1}{name_salt}",
                 "lora": lora_dict,
                 "_precomputed_diffs": True,
                 "strength": strength,
@@ -9414,7 +9525,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
             if clip_val == 0:
                 continue
             items.append({
-                "name": f"chain lora #{j + 1} (clip-only)",
+                "name": f"chain lora #{j + 1} (clip-only){name_salt}",
                 "lora": dict(clip_groups[j]["entries"]),
                 "_precomputed_diffs": True,
                 # Nonzero so the engine's strength filter keeps the item; no
@@ -9427,6 +9538,156 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 "metadata": {},
             })
         return items
+
+    def execute_inline(self, model, output_strength, clip=None,
+                       clip_strength_multiplier=1.0, settings_visibility="simple",
+                       lora_count=3, settings=None, **slot_kwargs):
+        model_groups = self._reconstruct_chain_groups(getattr(model, "patches", {}) or {})
+        clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
+        clip_groups = (self._reconstruct_chain_groups(clip_patcher.patches)
+                       if clip_patcher is not None else [])
+
+        if not model_groups and not clip_groups:
+            report = ("[Inline Optimizer] No LoRA patches found on the incoming "
+                      "model/clip. Place this node AFTER your Load LoRA nodes. "
+                      "Model passed through unchanged.")
+            return (model, clip, report, None, None)
+
+        slots = []
+        for i in range(1, lora_count + 1):
+            slots.append({k: slot_kwargs.get(f"{k}_{i}", d)
+                          for k, d in self._SLOT_DEFAULTS.items()})
+
+        # Merge-cache correctness: optimize_merge's in-node cache keys on item
+        # names + strengths, and virtual names carry no file identity. Salt
+        # them with the source patcher uuid(s) so swapping a LoRA file at
+        # identical strengths misses the cache; re-queues of an unchanged
+        # workflow reuse the same upstream patcher objects (comfy execution
+        # cache), so the salt stays stable and the cache still hits.
+        salt = str(getattr(model, "patches_uuid", ""))[:8]
+        if clip_patcher is not None:
+            salt += "/" + str(getattr(clip_patcher, "patches_uuid", ""))[:8]
+        stack = self._chain_groups_to_stack(model_groups, clip_groups, slots,
+                                            settings_visibility,
+                                            name_salt=f" [{salt}]")
+
+        stripped_model = model.clone()
+        self._strip_captured_entries(stripped_model, model_groups)
+        stripped_clip = None
+        if clip is not None:
+            stripped_clip = clip.clone()
+            if clip_patcher is not None:
+                self._strip_captured_entries(stripped_clip.patcher, clip_groups)
+
+        passthrough = sum(len(v) for v in
+                          (getattr(stripped_model, "patches", {}) or {}).values())
+        fingerprint = self._chain_fingerprint(model_groups, clip_groups,
+                                              lora_count, passthrough)
+
+        merge_kwargs = dict(clip=stripped_clip,
+                            clip_strength_multiplier=clip_strength_multiplier,
+                            # Captured entries already carry model-canonical
+                            # target keys — never re-normalize them. Pinned
+                            # even when a settings node is connected.
+                            normalize_keys="disabled")
+        if settings is not None and settings.get("mode") == "advanced":
+            # Same mapping as LoRAOptimizerSimple.execute_simple's advanced
+            # branch, minus normalize_keys (stays "disabled", see above).
+            merge_kwargs.update(
+                auto_strength=settings["auto_strength"],
+                auto_strength_floor=settings["auto_strength_floor"],
+                optimization_mode=settings["optimization_mode"],
+                sparsification=settings["sparsification"],
+                sparsification_density=settings["sparsification_density"],
+                dare_dampening=settings["dare_dampening"],
+                merge_strategy_override=settings.get("merge_strategy_override", ""),
+                merge_refinement=settings["merge_refinement"],
+                strategy_set=settings["strategy_set"],
+                architecture_preset=settings["architecture_preset"],
+                decision_smoothing=settings["decision_smoothing"],
+                smooth_slerp_gate=settings["smooth_slerp_gate"],
+                star_eta=settings.get("star_eta", 100.0),
+                tame_layers=settings.get("tame_layers", 0.0),
+                tame_threshold=settings.get("tame_threshold", 0.3),
+                cache_patches=settings["cache_patches"],
+                patch_compression=settings["patch_compression"],
+                svd_device=settings["svd_device"],
+                free_vram_between_passes=settings["free_vram_between_passes"],
+                vram_budget=settings["vram_budget"],
+            )
+        elif settings is not None:
+            # AutoTuner's caches key on file identity, which virtual chain
+            # items don't have — v1 falls back to optimizer defaults.
+            fingerprint += ("[Inline Optimizer] AutoTuner settings are not "
+                            "supported inline — using optimizer defaults.\n\n")
+
+        # optimize_merge clones the stripped model/clip again and add_patches
+        # the merged result — that is the intended re-apply path.
+        result = self.optimize_merge(stripped_model, stack, output_strength,
+                                     **merge_kwargs)
+        return self._prepend_report(result, fingerprint)
+
+    @staticmethod
+    def _payload_rank(payload):
+        """LoRA rank of a captured payload, or None for dense/exotic payloads."""
+        try:
+            if isinstance(payload, (tuple, list)):
+                return None  # dense diff — rank not meaningful
+            down = payload.weights[1]
+            return int(down.shape[0])
+        except Exception:
+            return None
+
+    def _chain_fingerprint(self, model_groups, clip_groups, lora_count,
+                           passthrough_count=0):
+        """Human-readable slot → LoRA attribution header, prepended to the
+        engine report so the user can verify chain-order attribution."""
+        lines = ["[Inline Optimizer] Detected loader chain (slot -> LoRA mapping):"]
+        for i, g in enumerate(model_groups):
+            ranks = [r for r in (self._payload_rank(p) for p in g["entries"].values())
+                     if r is not None]
+            rank_s = f"rank {max(ranks)}" if ranks else "dense"
+            clip_note = ""
+            if i < len(clip_groups):
+                clip_note = (f", +{len(clip_groups[i]['entries'])} clip keys "
+                             f"@ {clip_groups[i]['strength']:.2f}")
+            lines.append(f"  #{i + 1}: {len(g['entries'])} keys, {rank_s}, "
+                         f"loader strength {g['strength']:.2f}{clip_note}")
+        for j in range(len(model_groups), len(clip_groups)):
+            lines.append(f"  #{j + 1}: clip-only, {len(clip_groups[j]['entries'])} "
+                         f"clip keys @ {clip_groups[j]['strength']:.2f}")
+        if model_groups and clip_groups and len(model_groups) != len(clip_groups):
+            lines.append(f"  warning: {len(model_groups)} model-side vs "
+                         f"{len(clip_groups)} clip-side LoRA groups — clip "
+                         f"attribution is by order and may be off (e.g. "
+                         f"LoraLoaderModelOnly or TE-only LoRAs in the chain).")
+        n = max(len(model_groups), len(clip_groups))
+        if lora_count < n:
+            lines.append(f"  note: {n} LoRAs detected but only {lora_count} option "
+                         f"slots — extra LoRAs use default options.")
+        elif lora_count > n:
+            lines.append(f"  note: {lora_count} option slots but only {n} LoRAs "
+                         f"detected — extra slots ignored.")
+        if passthrough_count > 0:
+            lines.append(f"  note: {passthrough_count} non-LoRA patch entries on "
+                         f"the model were passed through untouched.")
+        lines.append("  (verify this order matches your loader chain — disjoint "
+                     "LoRAs with equal strengths cannot always be ordered)")
+        return "\n".join(lines) + "\n\n"
+
+    @staticmethod
+    def _prepend_report(result, prefix):
+        """Prepend the fingerprint to the report slot (index 2) of an
+        optimize_merge result — tuple or {"result": ..., "ui": ...} dict."""
+        if isinstance(result, dict):
+            r = list(result.get("result", ()))
+            if len(r) > 2 and isinstance(r[2], str):
+                r[2] = prefix + r[2]
+            return dict(result, result=tuple(r))
+        r = list(result)
+        if len(r) > 2 and isinstance(r[2], str):
+            r[2] = prefix + r[2]
+        return tuple(r)
 
 
 class LoRAAutoTuner(LoRAOptimizer):
