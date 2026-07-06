@@ -9555,9 +9555,21 @@ class LoRAOptimizerInline(LoRAOptimizer):
                        if clip_patcher is not None else [])
 
         if not model_groups and not clip_groups:
-            report = ("[Inline Optimizer] No LoRA patches found on the incoming "
-                      "model/clip. Place this node AFTER your Load LoRA nodes. "
-                      "Model passed through unchanged.")
+            n_entries = sum(len(v) for v in (getattr(model, "patches", {}) or {}).values())
+            if clip_patcher is not None:
+                n_entries += sum(len(v) for v in (clip_patcher.patches or {}).values())
+            if n_entries:
+                # Patches exist but none are LoRA-family — "move the node"
+                # would be wrong advice.
+                report = (f"[Inline Optimizer] {n_entries} non-mergeable patch "
+                          f"entries found on the incoming model/clip (e.g. "
+                          f"OFT/BOFT rotations, weight-set patches, hooked "
+                          f"entries) and passed through untouched; model "
+                          f"unchanged.")
+            else:
+                report = ("[Inline Optimizer] No LoRA patches found on the "
+                          "incoming model/clip. Place this node AFTER your "
+                          "Load LoRA nodes. Model passed through unchanged.")
             return (model, clip, report, None, None)
 
         slots = []
@@ -9565,12 +9577,14 @@ class LoRAOptimizerInline(LoRAOptimizer):
             slots.append({k: slot_kwargs.get(f"{k}_{i}", d)
                           for k, d in self._SLOT_DEFAULTS.items()})
 
-        # Merge-cache correctness: optimize_merge's in-node cache keys on item
-        # names + strengths, and virtual names carry no file identity. Salt
-        # them with the source patcher uuid(s) so swapping a LoRA file at
-        # identical strengths misses the cache; re-queues of an unchanged
-        # workflow reuse the same upstream patcher objects (comfy execution
-        # cache), so the salt stays stable and the cache still hits.
+        # Merge-cache correctness (defense-in-depth): optimize_merge's in-node
+        # cache keys on item names + strengths, and virtual names carry no
+        # file identity. Salt them with the source patcher uuid(s) so two
+        # different LoRA files loaded at identical strengths can never
+        # produce identical stack signatures. Re-queue speed does NOT come
+        # from this cache (its key folds in id() of the fresh stripped clone,
+        # so it misses across executions) — it comes from IS_CHANGED below,
+        # which lets ComfyUI's execution cache skip the node entirely.
         salt = str(getattr(model, "patches_uuid", ""))[:8]
         if clip_patcher is not None:
             salt += "/" + str(getattr(clip_patcher, "patches_uuid", ""))[:8]
@@ -9586,10 +9600,14 @@ class LoRAOptimizerInline(LoRAOptimizer):
             if clip_patcher is not None:
                 self._strip_captured_entries(stripped_clip.patcher, clip_groups)
 
+        # Non-capturable entries stay on the stripped clones (passed through);
+        # count both branches for the report.
         passthrough = sum(len(v) for v in
                           (getattr(stripped_model, "patches", {}) or {}).values())
-        fingerprint = self._chain_fingerprint(model_groups, clip_groups,
-                                              lora_count, passthrough)
+        stripped_clip_patcher = getattr(stripped_clip, "patcher", None)
+        if stripped_clip_patcher is not None:
+            passthrough += sum(len(v) for v in
+                               (stripped_clip_patcher.patches or {}).values())
 
         merge_kwargs = dict(clip=stripped_clip,
                             clip_strength_multiplier=clip_strength_multiplier,
@@ -9597,6 +9615,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
                             # target keys — never re-normalize them. Pinned
                             # even when a settings node is connected.
                             normalize_keys="disabled")
+        autotuner_fallback = False
         if settings is not None and settings.get("mode") == "advanced":
             # Same mapping as LoRAOptimizerSimple.execute_simple's advanced
             # branch, minus normalize_keys (stays "disabled", see above).
@@ -9625,6 +9644,14 @@ class LoRAOptimizerInline(LoRAOptimizer):
         elif settings is not None:
             # AutoTuner's caches key on file identity, which virtual chain
             # items don't have — v1 falls back to optimizer defaults.
+            autotuner_fallback = True
+
+        fingerprint = self._chain_fingerprint(
+            model_groups, clip_groups, lora_count, passthrough,
+            # Virtual items skip _normalize_stack's arch detection, so "auto"
+            # can never resolve inline — warn unless a preset is pinned.
+            arch_unknown=merge_kwargs.get("architecture_preset", "auto") == "auto")
+        if autotuner_fallback:
             fingerprint += ("[Inline Optimizer] AutoTuner settings are not "
                             "supported inline — using optimizer defaults.\n\n")
 
@@ -9640,13 +9667,17 @@ class LoRAOptimizerInline(LoRAOptimizer):
         try:
             if isinstance(payload, (tuple, list)):
                 return None  # dense diff — rank not meaningful
+            if isinstance(payload, LoKrAdapter):
+                # weights[1] is the w2 Kronecker factor, not a rank —
+                # reporting its shape as "rank N" would be a lie.
+                return None
             down = payload.weights[1]
             return int(down.shape[0])
         except Exception:
             return None
 
     def _chain_fingerprint(self, model_groups, clip_groups, lora_count,
-                           passthrough_count=0):
+                           passthrough_count=0, arch_unknown=False):
         """Human-readable slot → LoRA attribution header, prepended to the
         engine report so the user can verify chain-order attribution."""
         lines = ["[Inline Optimizer] Detected loader chain (slot -> LoRA mapping):"]
@@ -9676,8 +9707,12 @@ class LoRAOptimizerInline(LoRAOptimizer):
             lines.append(f"  note: {lora_count} option slots but only {n} LoRAs "
                          f"detected — extra slots ignored.")
         if passthrough_count > 0:
-            lines.append(f"  note: {passthrough_count} non-LoRA patch entries on "
-                         f"the model were passed through untouched.")
+            lines.append(f"  note: {passthrough_count} non-LoRA patch entries "
+                         f"passed through untouched (left on the model/clip).")
+        if arch_unknown:
+            lines.append("  architecture: unknown (inline capture) — set "
+                         "architecture_preset via a Settings node for "
+                         "arch-tuned thresholds.")
         lines.append("  (verify this order matches your loader chain — disjoint "
                      "LoRAs with equal strengths cannot always be ordered)")
         return "\n".join(lines) + "\n\n"
@@ -9695,6 +9730,33 @@ class LoRAOptimizerInline(LoRAOptimizer):
         if len(r) > 2 and isinstance(r[2], str):
             r[2] = prefix + r[2]
         return tuple(r)
+
+    @classmethod
+    def IS_CHANGED(cls, model, output_strength, clip=None,
+                   clip_strength_multiplier=1.0, settings_visibility="simple",
+                   lora_count=3, settings=None, **slot_kwargs):
+        """Execution-cache key for the inline node. The inherited
+        LoRAOptimizer.IS_CHANGED expects lora_stack and would raise on this
+        node's inputs — ComfyUI then treats the node as always-changed and
+        re-merges on every queue press. Key on the upstream patcher state
+        (patches_uuid regenerates on every add_patches, so swapping a LoRA
+        file or strength upstream changes it; an unchanged workflow reuses
+        the same cached patcher objects) plus every CONSULTED widget (slots
+        beyond lora_count don't affect the output) and settings content."""
+        h = hashlib.sha256()
+        h.update(str(getattr(model, "patches_uuid", id(model))).encode())
+        clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
+        if clip_patcher is not None:
+            h.update(f"|clip={getattr(clip_patcher, 'patches_uuid', id(clip))}".encode())
+        h.update(f"|os={output_strength}|csm={clip_strength_multiplier}"
+                 f"|vis={settings_visibility}|n={lora_count}".encode())
+        for i in range(1, int(lora_count) + 1):
+            slot = {k: slot_kwargs.get(f"{k}_{i}", d)
+                    for k, d in cls._SLOT_DEFAULTS.items()}
+            h.update(json.dumps(slot, sort_keys=True, default=str).encode())
+        if settings is not None:
+            h.update(json.dumps(settings, sort_keys=True, default=str).encode())
+        return h.hexdigest()[:16]
 
 
 class LoRAAutoTuner(LoRAOptimizer):
