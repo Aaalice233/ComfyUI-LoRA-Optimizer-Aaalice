@@ -87,6 +87,7 @@ Restart ComfyUI. Nodes appear under the `loaders` category.
 |------|-------------|
 | **LoRA Stack** / **(Dynamic)** | Build your list of LoRAs — pick files, set strengths |
 | **LoRA Optimizer** | Analyze + merge your stack automatically. Just connect and go |
+| **LoRA Optimizer (Inline Chain)** | Drop-in filter after regular Load LoRA nodes — merges their patches in place, no restacking |
 | **Settings Nodes** | Optional fine-tuning: sparsification, compression, smoothing, etc. |
 | **LoRA AutoTuner** | Sweep 2000+ parameter combos, rank the best configs |
 | **LoRA Merge Estimator** | Predict the best config via k-NN over the community cache — skip the sweep |
@@ -535,7 +536,7 @@ Connect the `STRING` output to a **Show Text** node to see the report in ComfyUI
 
 > **Structural & Edit LoRAs:** Do not put distillation LoRAs (LCM, Lightning, Turbo, Hyper), DPO LoRAs, or **edit model LoRAs** (Qwen edit, Klein edit, instruction-editing LoRAs) in the optimizer stack. These LoRAs modify the model's fundamental behavior — their weights are precisely calibrated and merging them with style LoRAs can break their training. Apply them via a standard **Load LoRA** node upstream, then feed only your style/character LoRAs into the optimizer. If you must include an edit LoRA in the stack, use `additive` mode and disable sparsification to avoid weight trimming.
 
-> **Limitation:** The optimizer only analyzes LoRAs in its own stack. It cannot see LoRA patches applied by upstream nodes (Load LoRA, etc.) — those stack additively on top of the optimizer's output. Fully baked merges (safetensors checkpoints) are indistinguishable from base weights and cannot be detected.
+> **Limitation:** The optimizer only analyzes LoRAs in its own stack. It cannot see LoRA patches applied by upstream nodes (Load LoRA, etc.) — those stack additively on top of the optimizer's output. To capture and merge an existing Load LoRA chain instead, use the **LoRA Optimizer (Inline Chain)** node. Fully baked merges (safetensors checkpoints) are indistinguishable from base weights and cannot be detected.
 
 </details>
 
@@ -836,6 +837,43 @@ Load Checkpoint → MODEL ──┬──→ LoRA Optimizer → LORA_DATA → Me
 ```
 
 The `prev_hooks` input allows chaining multiple hook sources together.
+
+---
+
+### LoRA Optimizer (Inline Chain)
+
+Drop-in filter for workflows built on **regular Load LoRA nodes** — no restacking required. Place it after your loader chain: it reads the LoRA patches the loaders left on `MODEL`/`CLIP`, strips the originals, merges them with the same optimizer engine, and re-applies the merged result. Outputs match the other optimizer nodes (`model`, `clip`, `analysis_report`, `tuner_data`, `lora_data`), so **Save Merged LoRA** chaining works.
+
+```
+Load Checkpoint ──► Load LoRA #1 ──► Load LoRA #2 ──► ... ──► LoRA Optimizer (Inline Chain) ──► KSampler
+                                                               (reads, strips, merges, re-applies)
+```
+
+**When to use it:** you already have a workflow full of Load LoRA nodes and want the optimizer's conflict-resolved merge without rebuilding it around a **LoRA Stack**. For new workflows, the Stack → Optimizer path is still preferred — loading from files gives the optimizer real names, metadata, and architecture auto-detection.
+
+**Slot order = chain order.** Slot #1 is the first Load LoRA in the chain (closest to the checkpoint). The report opens with per-LoRA chain fingerprints so you can verify the attribution:
+
+```
+[Inline Optimizer] Detected loader chain (slot -> LoRA mapping):
+  #1: 210 keys, rank 16, loader strength 0.80
+  #2: 176 keys, rank 32, loader strength 0.50, +48 clip keys @ 0.50
+```
+
+| Per-slot option | Effect |
+|---|---|
+| `enabled` | Off = that LoRA is removed from the model entirely (not merged, not applied) |
+| `strength` (simple) | **Multiplier** on the loader's strength — `1.0` keeps what the loader set; it is not an override |
+| `model_strength` / `clip_strength` (advanced) | Separate multipliers for the model and text-encoder branches |
+| `conflict_mode` / `key_filter` / `preserve` (advanced) | Same per-LoRA controls as **LoRA Stack (Dynamic)** |
+
+Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node (advanced mode) is supported via the `settings` input.
+
+**v1 limitations:**
+- **AutoTuner settings are not supported** — an AutoTuner-mode Settings node falls back to optimizer defaults (noted in the report).
+- **Fully-disjoint LoRAs at identical strengths** may be grouped or ordered ambiguously — the chain fingerprints reveal it when it happens.
+- **Model↔CLIP pairing is by chain order** — a `LoraLoaderModelOnly` or a TE-only LoRA file in the chain can shift clip attribution; the report warns when the model/clip group counts differ.
+- **Architecture detection reports `unknown` for inline capture** — set `architecture_preset` via a Settings node to get arch-tuned thresholds.
+- **WanVideo wrapper models are not supported** — use the dedicated **WanVideo LoRA Optimizer** below.
 
 ---
 
