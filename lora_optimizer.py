@@ -9346,50 +9346,84 @@ class LoRAOptimizerInline(LoRAOptimizer):
         With visibility "simple" the single `strength` multiplier applies
         to both branches; "advanced" uses separate model/clip multipliers.
         Disabled slots are excluded from the returned stack entirely.
-        Leftover clip-only groups (more clip groups than model groups)
-        become items with model strength 0.0.
+
+        The engine drops items whose `strength` is 0 before merging (the
+        active_loras filter in optimize_merge), so an item with a zeroed
+        model branch but a live clip branch must NOT carry strength 0.0:
+        it keeps only the CLIP entries and rides on the clip product as
+        its `strength` — harmless for unet math, since no unet keys are
+        on it.  Items zeroed on both branches are dropped here.
         """
         defaults = LoRAOptimizerInline._SLOT_DEFAULTS
         items = []
         for i, group in enumerate(model_groups):
             opts = slots[i] if i < len(slots) else defaults
-            if not opts.get("enabled", True):
+            if not opts.get("enabled", defaults["enabled"]):
                 continue
             if visibility == "advanced":
-                model_mult, clip_mult = opts["model_strength"], opts["clip_strength"]
+                model_mult = opts.get("model_strength", defaults["model_strength"])
+                clip_mult = opts.get("clip_strength", defaults["clip_strength"])
             else:
-                model_mult = clip_mult = opts["strength"]
-            lora_dict = dict(group["entries"])
-            clip_strength = None
+                model_mult = clip_mult = opts.get("strength", defaults["strength"])
+            model_val = group["strength"] * model_mult
+            clip_val = None
             if i < len(clip_groups):
-                lora_dict.update(clip_groups[i]["entries"])
-                clip_strength = clip_groups[i]["strength"] * clip_mult
+                clip_val = clip_groups[i]["strength"] * clip_mult
+            if model_val == 0 and not clip_val:
+                continue  # user zeroed this LoRA on every branch
+            if model_val == 0:
+                # Model branch user-zeroed (e.g. LoraLoader strength_model=0)
+                # but the clip branch is live: keep the CLIP entries only and
+                # carry the clip product as the item strength so the engine's
+                # strength != 0 filter keeps the item alive.
+                lora_dict = dict(clip_groups[i]["entries"])
+                strength = clip_val
+            else:
+                lora_dict = dict(group["entries"])
+                if clip_val:
+                    # Silent-overwrite update is safe: model-patcher keys are
+                    # always diffusion_model.* while clip-patcher keys live in
+                    # the text-encoder namespace (clip_l.*, t5xxl.*, ...), so
+                    # collisions cannot occur.
+                    lora_dict.update(clip_groups[i]["entries"])
+                # else: paired clip branch zeroed — drop the clip keys (they
+                # would merge at zero anyway); clip_strength stays 0.0 as the
+                # honest record of the user's choice.
+                strength = model_val
             items.append({
                 "name": f"chain lora #{i + 1}",
                 "lora": lora_dict,
                 "_precomputed_diffs": True,
-                "strength": group["strength"] * model_mult,
-                "clip_strength": clip_strength,
-                "conflict_mode": opts["conflict_mode"],
-                "key_filter": opts["key_filter"],
-                "preserve": bool(opts.get("preserve", False)),
+                "strength": strength,
+                "clip_strength": clip_val,
+                "conflict_mode": opts.get("conflict_mode", defaults["conflict_mode"]),
+                "key_filter": opts.get("key_filter", defaults["key_filter"]),
+                "preserve": bool(opts.get("preserve", defaults["preserve"])),
                 "metadata": {},
             })
         # Clip-only leftovers: loader calls that only patched the CLIP branch
         for j in range(len(model_groups), len(clip_groups)):
             opts = slots[j] if j < len(slots) else defaults
-            if not opts.get("enabled", True):
+            if not opts.get("enabled", defaults["enabled"]):
                 continue
-            clip_mult = opts["clip_strength"] if visibility == "advanced" else opts["strength"]
+            if visibility == "advanced":
+                clip_mult = opts.get("clip_strength", defaults["clip_strength"])
+            else:
+                clip_mult = opts.get("strength", defaults["strength"])
+            clip_val = clip_groups[j]["strength"] * clip_mult
+            if clip_val == 0:
+                continue
             items.append({
                 "name": f"chain lora #{j + 1} (clip-only)",
                 "lora": dict(clip_groups[j]["entries"]),
                 "_precomputed_diffs": True,
-                "strength": 0.0,
-                "clip_strength": clip_groups[j]["strength"] * clip_mult,
-                "conflict_mode": opts["conflict_mode"],
-                "key_filter": opts["key_filter"],
-                "preserve": bool(opts.get("preserve", False)),
+                # Nonzero so the engine's strength filter keeps the item; no
+                # unet keys ride on it, so the scalar never touches unet math.
+                "strength": clip_val,
+                "clip_strength": clip_val,
+                "conflict_mode": opts.get("conflict_mode", defaults["conflict_mode"]),
+                "key_filter": opts.get("key_filter", defaults["key_filter"]),
+                "preserve": bool(opts.get("preserve", defaults["preserve"])),
                 "metadata": {},
             })
         return items

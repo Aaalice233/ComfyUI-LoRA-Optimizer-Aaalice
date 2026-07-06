@@ -301,6 +301,70 @@ class TestChainStackBuild(unittest.TestCase):
         self.assertEqual(len(stack), 1)
         self.assertIn("te.a", stack[0]["lora"])
 
+    def test_leftover_strength_is_clip_product_nonzero(self):
+        # the engine drops strength == 0 items (active_loras filter in
+        # optimize_merge) — clip-only items must ride on the clip product
+        cg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.6, {"te.a": _adapter()})))
+        stack = self._build([], cg, [])
+        self.assertNotEqual(stack[0]["strength"], 0.0)
+        self.assertAlmostEqual(stack[0]["strength"], 0.6)
+        self.assertAlmostEqual(stack[0]["clip_strength"], 0.6)
+
+    def test_zeroed_model_branch_keeps_live_clip_branch(self):
+        # stock-UI case: LoraLoader with strength_model=0, strength_clip=1.0
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"a": _adapter()})))
+        cg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.6, {"te.a": _adapter()})))
+        stack = self._build(mg, cg, [_slot(model_strength=0.0, clip_strength=1.0)],
+                            visibility="advanced")
+        self.assertEqual(len(stack), 1)
+        self.assertNotIn("a", stack[0]["lora"])       # unet keys dropped
+        self.assertIn("te.a", stack[0]["lora"])
+        self.assertAlmostEqual(stack[0]["strength"], 0.6)      # clip product
+        self.assertAlmostEqual(stack[0]["clip_strength"], 0.6)
+
+    def test_both_branches_zeroed_item_excluded(self):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"a": _adapter()})))
+        cg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.6, {"te.a": _adapter()})))
+        stack = self._build(mg, cg, [_slot(model_strength=0.0, clip_strength=0.0)],
+                            visibility="advanced")
+        self.assertEqual(stack, [])
+
+    def test_leftover_after_model_groups_uses_own_slot_index(self):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"a": _adapter()})))
+        cg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.6, {"te.a": _adapter()}), (0.4, {"te.b": _adapter()})))
+        stack = self._build(mg, cg, [_slot(), _slot()])
+        self.assertEqual(len(stack), 2)
+        self.assertEqual(stack[1]["name"], "chain lora #2 (clip-only)")
+        self.assertIn("te.b", stack[1]["lora"])
+        self.assertAlmostEqual(stack[1]["strength"], 0.4)
+        # slot index j (not 0) gates the leftover — disabling slot 2 drops it
+        stack = self._build(mg, cg, [_slot(), _slot(enabled=False)])
+        self.assertEqual(len(stack), 1)
+        self.assertNotIn("(clip-only)", stack[0]["name"])
+
+    def test_simple_visibility_scales_paired_clip(self):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"a": _adapter()})))
+        cg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.6, {"te.a": _adapter()})))
+        stack = self._build(mg, cg, [_slot(strength=0.5)])   # simple visibility
+        self.assertAlmostEqual(stack[0]["strength"], 0.4)          # 0.8 × 0.5
+        self.assertAlmostEqual(stack[0]["clip_strength"], 0.3)     # 0.6 × 0.5
+
+    def test_extra_slots_ignored(self):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"a": _adapter()})))
+        stack = self._build(mg, [], [_slot(), _slot(strength=9.0), _slot(enabled=False)])
+        self.assertEqual(len(stack), 1)
+        self.assertAlmostEqual(stack[0]["strength"], 0.8)
+
 
 if __name__ == "__main__":
     unittest.main()
