@@ -9313,6 +9313,88 @@ class LoRAOptimizerSimple(LoRAOptimizer):
         return base
 
 
+class LoRAOptimizerInline(LoRAOptimizer):
+    """
+    Inline chain filter: merges the LoRA patches that upstream regular
+    Load LoRA nodes left on the MODEL/CLIP, strips the originals, and
+    re-applies the optimized merge.  Slot options are attributed to LoRAs
+    by their order in the loader chain (first loader = LoRA #1).
+    """
+
+    MAX_LORAS = 10
+
+    _SLOT_DEFAULTS = {
+        "enabled": True,
+        "strength": 1.0,
+        "model_strength": 1.0,
+        "clip_strength": 1.0,
+        "conflict_mode": "all",
+        "key_filter": "all",
+        "preserve": False,
+    }
+
+    @staticmethod
+    def _chain_groups_to_stack(model_groups, clip_groups, slots, visibility):
+        """
+        Build virtual stack items (the _model_to_virtual_lora schema) from
+        ordered chain groups.  Model and clip groups pair by chain order:
+        one loader call patches both branches, so model group i and clip
+        group i come from the same LoRA.  Slot i applies to chain LoRA i;
+        missing slots use defaults, extra slots are ignored.
+
+        Slot strengths are MULTIPLIERS on the loader's captured strength.
+        With visibility "simple" the single `strength` multiplier applies
+        to both branches; "advanced" uses separate model/clip multipliers.
+        Disabled slots are excluded from the returned stack entirely.
+        Leftover clip-only groups (more clip groups than model groups)
+        become items with model strength 0.0.
+        """
+        defaults = LoRAOptimizerInline._SLOT_DEFAULTS
+        items = []
+        for i, group in enumerate(model_groups):
+            opts = slots[i] if i < len(slots) else defaults
+            if not opts.get("enabled", True):
+                continue
+            if visibility == "advanced":
+                model_mult, clip_mult = opts["model_strength"], opts["clip_strength"]
+            else:
+                model_mult = clip_mult = opts["strength"]
+            lora_dict = dict(group["entries"])
+            clip_strength = None
+            if i < len(clip_groups):
+                lora_dict.update(clip_groups[i]["entries"])
+                clip_strength = clip_groups[i]["strength"] * clip_mult
+            items.append({
+                "name": f"chain lora #{i + 1}",
+                "lora": lora_dict,
+                "_precomputed_diffs": True,
+                "strength": group["strength"] * model_mult,
+                "clip_strength": clip_strength,
+                "conflict_mode": opts["conflict_mode"],
+                "key_filter": opts["key_filter"],
+                "preserve": bool(opts.get("preserve", False)),
+                "metadata": {},
+            })
+        # Clip-only leftovers: loader calls that only patched the CLIP branch
+        for j in range(len(model_groups), len(clip_groups)):
+            opts = slots[j] if j < len(slots) else defaults
+            if not opts.get("enabled", True):
+                continue
+            clip_mult = opts["clip_strength"] if visibility == "advanced" else opts["strength"]
+            items.append({
+                "name": f"chain lora #{j + 1} (clip-only)",
+                "lora": dict(clip_groups[j]["entries"]),
+                "_precomputed_diffs": True,
+                "strength": 0.0,
+                "clip_strength": clip_groups[j]["strength"] * clip_mult,
+                "conflict_mode": opts["conflict_mode"],
+                "key_filter": opts["key_filter"],
+                "preserve": bool(opts.get("preserve", False)),
+                "metadata": {},
+            })
+        return items
+
+
 class LoRAAutoTuner(LoRAOptimizer):
     """
     Automatic parameter sweep that ranks merge configurations for a given
