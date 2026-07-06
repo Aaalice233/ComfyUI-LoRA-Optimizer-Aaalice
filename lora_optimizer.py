@@ -2121,6 +2121,19 @@ class _LoRAMergeBase:
         return comfy.lora.model_lora_keys_unet(model.model, {})
 
     @staticmethod
+    def _is_capturable_entry(entry):
+        """True if a ModelPatcher patch entry is a plain additive LoRA-family
+        application we can merge: adapter object or ("diff", (tensor,)) payload,
+        strength_model == 1.0, no custom function. Everything else (OFT/BOFT
+        rotations, "set" payloads, model-merge entries) is passed through."""
+        strength, payload, strength_model, offset, function = entry
+        if function is not None or strength_model != 1.0:
+            return False
+        if isinstance(payload, (tuple, list)):
+            return len(payload) == 2 and payload[0] == "diff"
+        return isinstance(payload, (LoRAAdapter, LoKrAdapter, LoHaAdapter))
+
+    @staticmethod
     def _collect_lora_prefixes(active_loras):
         """Collect all LoRA key prefixes from a stack in deterministic order."""
         all_lora_prefixes = set()
