@@ -898,23 +898,29 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
 
     @staticmethod
     def _det_mats(seed_row):
-        """Deterministic full-rank-ish up/down matrices (no randn luck)."""
+        """Deterministic rank-2 up/down matrices (each linspace reshape has
+        rows/columns affine in the index, so the span is {1, arange} — rank 2;
+        deterministic on purpose, no randn luck)."""
         up = torch.linspace(-1.0 + seed_row, 1.0 + seed_row, 16 * 4).reshape(16, 4)
         down = torch.linspace(0.5 - seed_row, -0.5 + seed_row, 4 * 16).reshape(4, 16)
         return up, down
 
-    def _run(self, chain, settings=None, **exec_kwargs):
+    def _run(self, chain, settings=None, output_strength=1.0, **exec_kwargs):
         applied = {}
         model = _pipeline_model(_chain_patches(*chain), applied)
+        # Snapshot the loader entries BEFORE execute_inline runs — comparing
+        # a post-run snapshot to the post-run state would be tautological and
+        # could never catch the node mutating its input model's patch lists.
+        orig_entries = {k: list(v) for k, v in model.patches.items()}
         node = lora_optimizer.LoRAOptimizerInline()
         node._get_model_keys = lambda m: {"alias_layer": self.KEY}
         calls = []
         with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
                                _realistic_load_lora_for_models(calls)):
-            result = node.execute_inline(model, output_strength=1.0,
+            result = node.execute_inline(model, output_strength=output_strength,
                                          settings=settings, **exec_kwargs)
         out = result["result"] if isinstance(result, dict) else result
-        return model, applied, calls, out
+        return model, applied, calls, out, orig_entries
 
     def test_two_lora_chain_weighted_sum_is_numerically_exact(self):
         up_a, down_a = self._det_mats(0.0)
@@ -927,8 +933,8 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
         # merged = 1.0 * (up_a @ down_a) + 0.7 * (up_b @ down_b)
         settings = _advanced_settings(optimization_mode="global",
                                       merge_strategy_override="weighted_sum")
-        model, applied, calls, out = self._run(chain, settings=settings)
-        orig_entries = list(model.patches[self.KEY])
+        model, applied, calls, out, orig_entries = self._run(
+            chain, settings=settings)
 
         # (a) report opens with the chain fingerprints, engine report follows
         report = out[2]
@@ -952,8 +958,33 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
                         f"max err {(got - expected).abs().max().item()}")
 
         # (d) the original input model still carries its loader entries
-        self.assertEqual(model.patches[self.KEY], orig_entries)
+        # (orig_entries snapshotted pre-run in _run, so this has teeth)
+        self.assertEqual(model.patches[self.KEY], orig_entries[self.KEY])
         self.assertEqual(len(model.patches[self.KEY]), 2)
+
+    def test_output_strength_scales_at_apply_not_in_patches(self):
+        # Same exact-weighted-sum setup, but output_strength=0.5: the master
+        # volume must ride on add_patches ONCE and never ALSO be baked into
+        # the patch tensors (which would double-scale the merged result).
+        up_a, down_a = self._det_mats(0.0)
+        up_b, down_b = self._det_mats(0.25)
+        chain = (
+            (1.0, {self.KEY: _adapter(up=up_a, down=down_a)}),
+            (0.7, {self.KEY: _adapter(up=up_b, down=down_b)}),
+        )
+        settings = _advanced_settings(optimization_mode="global",
+                                      merge_strategy_override="weighted_sum")
+        model, applied, calls, out, orig_entries = self._run(
+            chain, settings=settings, output_strength=0.5)
+
+        self.assertEqual(calls, [])
+        self.assertAlmostEqual(applied["strength"], 0.5)
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
+            applied["patches"][self.KEY])
+        # UNscaled weighted sum — identical to the output_strength=1.0 case
+        expected = up_a @ down_a + 0.7 * (up_b @ down_b)
+        self.assertTrue(torch.allclose(got, expected, atol=1e-5),
+                        f"max err {(got - expected).abs().max().item()}")
 
     def test_conflicting_loras_complete_through_conflict_analysis(self):
         # Opposite-sign directions built deliberately: B is A negated with a
@@ -967,7 +998,8 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
             (1.0, {self.KEY: _adapter(up=up_a, down=down_a)}),
             (0.7, {self.KEY: _adapter(up=-up_a, down=down_b)}),
         )
-        model, applied, calls, out = self._run(chain, settings=_advanced_settings())
+        model, applied, calls, out, orig_entries = self._run(
+            chain, settings=_advanced_settings())
 
         self.assertEqual(calls, [])
         report = out[2]
@@ -980,7 +1012,17 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
         self.assertEqual(tuple(got.shape), (16, 16))
         self.assertTrue(torch.isfinite(got).all())
         self.assertGreater(got.abs().max().item(), 0.0)
-        # original chain untouched on the input model
+        # direction teeth: A (strength 1.0) beats the weaker near-antiparallel
+        # B (0.7), so any sane conflict resolution must land on A's side of
+        # the axis — positive cosine alignment with A's diff.
+        diff_a = (up_a @ down_a).flatten()
+        cos = torch.nn.functional.cosine_similarity(
+            got.flatten(), diff_a, dim=0).item()
+        self.assertGreater(cos, 0.0,
+                           f"merged patch flipped to the weaker LoRA's "
+                           f"direction (cos={cos:.4f})")
+        # original chain untouched on the input model (pre-run snapshot)
+        self.assertEqual(model.patches[self.KEY], orig_entries[self.KEY])
         self.assertEqual(len(model.patches[self.KEY]), 2)
 
 
