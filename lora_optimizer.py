@@ -7432,7 +7432,14 @@ class LoRAOptimizer(_LoRAMergeBase):
         # auto_strength is a no-op with a single LoRA (scale would be 1.0).
         # Skip fast path for Z-Image: normalized keys (to_q/to_k/to_v) won't
         # match the model's fused qkv keys — need full pipeline + re-fusion.
-        if len(active_loras) == 1 and getattr(self, '_detected_arch', None) != 'zimage':
+        # Skip for virtual items (_precomputed_diffs): their lora dict maps
+        # MODEL-TARGET keys to adapters/diffs, not trainer-format keys, so
+        # comfy.sd.load_lora_for_models would resolve nothing and silently
+        # apply NO LoRA at all (fatal for the inline node, which has already
+        # stripped the originals off the model).
+        if (len(active_loras) == 1
+                and getattr(self, '_detected_arch', None) != 'zimage'
+                and not active_loras[0].get("_precomputed_diffs")):
             item = active_loras[0]
             lora_dict = item["lora"]
             strength = item["strength"]

@@ -3,6 +3,7 @@ import struct
 import types
 import unittest
 import uuid
+from unittest import mock
 
 import torch
 
@@ -600,6 +601,99 @@ class TestInlineExecute(unittest.TestCase):
         self.assertEqual(cls.RETURN_TYPES,
                          ("MODEL", "CLIP", "STRING", "TUNER_DATA", "LORA_DATA"))
         self.assertNotIn("RETURN_TYPES", vars(cls))   # not redeclared
+
+
+def _realistic_load_lora_for_models(calls):
+    """A comfy.sd.load_lora_for_models stand-in that mimics the REAL failure
+    mode instead of blindly passing the model through: it resolves only
+    TRAINER-format keys ({x}.lora_up.weight / .lora_down.weight). Virtual
+    chain items carry model-target keys, so nothing matches and the models
+    come back unchanged — exactly what live comfy does, silently."""
+    def stub(model, clip, lora_dict, strength_model, strength_clip):
+        matched = [k for k in lora_dict
+                   if isinstance(k, str) and (k.endswith(".lora_up.weight")
+                                              or k.endswith(".lora_down.weight"))]
+        calls.append({"matched": matched, "n_keys": len(lora_dict)})
+        return (model, clip)   # nothing baked for unmatched keys
+    return stub
+
+
+class TestSingleLoraVirtualPath(unittest.TestCase):
+    """A 1-LoRA chain (or N LoRAs with all but one disabled) must NOT take
+    optimize_merge's single-LoRA fast path: load_lora_for_models looks up
+    trainer-format keys, virtual items carry model-target keys, so it would
+    load NOTHING — and with the originals stripped, the output model would
+    silently lose the LoRA entirely."""
+
+    def _fake_model(self, patches, applied):
+        model = _FakePatcher(patches)
+        model.model = types.SimpleNamespace(
+            layer=types.SimpleNamespace(weight=torch.zeros(16, 16)))
+        orig_clone = model.clone
+
+        def clone():
+            c = orig_clone()
+            c.model = model.model
+            c.add_patches = lambda p, strength=1.0, strength_clip=None: (
+                applied.update(patches=dict(p), strength=strength),
+                list(p.keys()))[1]
+            c.clone = clone
+            return c
+
+        model.clone = clone
+        return model
+
+    def test_single_virtual_lora_goes_through_pipeline(self):
+        key = "layer.weight"
+        applied = {}
+        model = self._fake_model(
+            _chain_patches((0.9, {key: _adapter(rank=4, out_dim=16, in_dim=16)})),
+            applied)
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": key}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            result = node.execute_inline(model, output_strength=1.0)
+        out = result["result"] if isinstance(result, dict) else result
+        self.assertEqual(calls, [])               # fast path NOT taken
+        self.assertTrue(applied.get("patches"))   # pipeline re-applied patches
+        self.assertIn("chain lora #1", out[2])
+
+    def test_disabled_down_to_single_also_uses_pipeline(self):
+        key = "layer.weight"
+        applied = {}
+        model = self._fake_model(
+            _chain_patches((0.9, {key: _adapter(rank=4, out_dim=16, in_dim=16)}),
+                           (0.5, {key: _adapter(rank=4, out_dim=16, in_dim=16)})),
+            applied)
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": key}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            node.execute_inline(model, output_strength=1.0, enabled_2=False)
+        self.assertEqual(calls, [])
+        self.assertTrue(applied.get("patches"))
+
+    def test_plain_single_lora_stack_still_takes_fast_path(self):
+        # Regression net for the guard: trainer-format single-LoRA stacks
+        # keep the fast path, and the realistic stub CAN match their keys.
+        model = _FakePatcher({})
+        model.model = types.SimpleNamespace(
+            layer=types.SimpleNamespace(weight=torch.zeros(16, 16)))
+        stack = [{"name": "A", "strength": 1.0,
+                  "lora": {"alias_layer.lora_up.weight": torch.randn(16, 4),
+                           "alias_layer.lora_down.weight": torch.randn(4, 16),
+                           "alias_layer.alpha": torch.tensor(4.0)}}]
+        node = lora_optimizer.LoRAOptimizer()
+        node._get_model_keys = lambda m: {"alias_layer": "layer.weight"}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            node.optimize_merge(model, stack, 1.0)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["matched"])
 
 
 if __name__ == "__main__":
