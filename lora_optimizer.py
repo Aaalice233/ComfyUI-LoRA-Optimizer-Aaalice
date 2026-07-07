@@ -2122,6 +2122,27 @@ class _LoRAMergeBase:
         return comfy.lora.model_lora_keys_unet(model.model, {})
 
     @staticmethod
+    def _payload_rank(payload):
+        """LoRA rank of a captured payload, or None for dense/exotic payloads.
+
+        Shared by the inline fingerprint AND _prepare_group_diffs' virtual-item
+        rank accounting — one source of truth so analysis and the fingerprint
+        never disagree. tuple/list dense diffs and LoKr (whose weights[1] is the
+        w2 Kronecker factor, not a rank) return None; a real LoRA/LoHa adapter
+        returns mat_down.shape[0]."""
+        try:
+            if isinstance(payload, (tuple, list)):
+                return None  # dense diff — rank not meaningful
+            if isinstance(payload, LoKrAdapter):
+                # weights[1] is the w2 Kronecker factor, not a rank —
+                # reporting its shape as "rank N" would be a lie.
+                return None
+            down = payload.weights[1]
+            return int(down.shape[0])
+        except Exception:
+            return None
+
+    @staticmethod
     def _is_capturable_entry(entry):
         """True if a ModelPatcher patch entry is a plain additive LoRA-family
         application we can merge: adapter object or ("diff", (tensor,)) payload,
@@ -2514,7 +2535,14 @@ class _LoRAMergeBase:
                         diff = None
                     if diff is not None:
                         raw_contributors.add(i)
-                        rank_sum += 1
+                        # Captured chain items carry REAL weight-adapters, not
+                        # opaque dense diffs — read their true rank
+                        # (mat_down.shape[0]) so analysis doesn't report every
+                        # inline LoRA as rank 1 and floor compress_rank to 64.
+                        # Genuine dense sub-merge diffs (bare tensor / ("diff",
+                        # …)) and LoKr return None -> += 1 (rank unknown).
+                        _pr = self._payload_rank(raw)
+                        rank_sum += _pr if isinstance(_pr, int) and _pr > 0 else 1
                         if storage_dtype is None:
                             storage_dtype = raw.dtype if isinstance(raw, torch.Tensor) else diff.dtype
                         diff_accum = diff
@@ -9763,21 +9791,6 @@ class LoRAOptimizerInline(LoRAOptimizer):
         result = self.optimize_merge(stripped_model, stack, output_strength,
                                      **merge_kwargs)
         return self._prepend_report(result, fingerprint)
-
-    @staticmethod
-    def _payload_rank(payload):
-        """LoRA rank of a captured payload, or None for dense/exotic payloads."""
-        try:
-            if isinstance(payload, (tuple, list)):
-                return None  # dense diff — rank not meaningful
-            if isinstance(payload, LoKrAdapter):
-                # weights[1] is the w2 Kronecker factor, not a rank —
-                # reporting its shape as "rank N" would be a lie.
-                return None
-            down = payload.weights[1]
-            return int(down.shape[0])
-        except Exception:
-            return None
 
     def _chain_fingerprint(self, model_groups, clip_groups, lora_count,
                            passthrough_count=0, arch_unknown=False,

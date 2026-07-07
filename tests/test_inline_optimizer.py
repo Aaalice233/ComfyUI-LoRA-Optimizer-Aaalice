@@ -1295,5 +1295,115 @@ class TestInlineFingerprintArch(unittest.TestCase):
         self.assertIn("architecture_preset", report)
 
 
+class TestInlineRankReporting(unittest.TestCase):
+    """The inline analysis path must read each captured adapter's TRUE rank
+    (mat_down.shape[0]) instead of counting every precomputed diff as rank 1.
+    A rank-1 undercount makes avg_rank -> sum_rank -> compress_rank floor to
+    64, over-compressing higher-rank captured LoRAs."""
+
+    KEY = "layer.weight"
+
+    # ---- unit: the _payload_rank helper, now on the shared base class ----
+
+    def test_payload_rank_reads_adapter_rank(self):
+        got = lora_optimizer._LoRAMergeBase._payload_rank(
+            _adapter(rank=32, out_dim=16, in_dim=16))
+        self.assertEqual(got, 32)
+
+    def test_payload_rank_none_for_dense_diff_tuple(self):
+        self.assertIsNone(lora_optimizer._LoRAMergeBase._payload_rank(
+            ("diff", (torch.randn(8, 8),))))
+
+    def test_payload_rank_none_for_bare_tensor(self):
+        self.assertIsNone(
+            lora_optimizer._LoRAMergeBase._payload_rank(torch.randn(8, 8)))
+
+    def test_payload_rank_none_for_lokr(self):
+        lokr = lora_optimizer.LoKrAdapter(
+            loaded_keys=set(),
+            weights=(torch.randn(4, 4), torch.randn(2, 2), None, None,
+                     None, None, None, None))
+        self.assertIsNone(lora_optimizer._LoRAMergeBase._payload_rank(lokr))
+
+    def test_helper_not_left_on_inline_subclass(self):
+        # Moved to the base, so the subclass must NOT redeclare it (DRY: one
+        # implementation shared by the fingerprint AND _prepare_group_diffs).
+        self.assertNotIn("_payload_rank",
+                         vars(lora_optimizer.LoRAOptimizerInline))
+        self.assertIn("_payload_rank",
+                      vars(lora_optimizer._LoRAMergeBase))
+
+    # ---- _prepare_group_diffs rank accounting on virtual items ----
+
+    def _rank_sums(self, payloads, dim=16):
+        """Run _prepare_group_diffs over a virtual (_precomputed_diffs) stack
+        of the given per-LoRA payloads on one shared model key; return the
+        resolved rank_sums dict."""
+        model = _pipeline_model({}, {}, dim=dim)     # .model has layer.weight
+        active = [{"name": f"chain lora #{i + 1}", "strength": 1.0,
+                   "_precomputed_diffs": True, "lora": {self.KEY: p}}
+                  for i, p in enumerate(payloads)]
+        target_group = {"target_key": self.KEY, "is_clip": False,
+                        "aliases": [self.KEY], "label_prefix": self.KEY}
+        node = lora_optimizer.LoRAOptimizerInline()
+        prepared = node._prepare_group_diffs(
+            target_group, active, model, None, torch.device("cpu"))
+        return prepared["rank_sums"]
+
+    def test_prepare_group_diffs_reads_true_adapter_rank(self):
+        rank_sums = self._rank_sums([_adapter(rank=32, out_dim=16, in_dim=16)])
+        self.assertEqual(rank_sums[0], 32)       # was 1 before the fix
+
+    def test_prepare_group_diffs_dense_diff_stays_rank_1(self):
+        # A formula-submerge-style dense virtual payload has no meaningful rank
+        # -> _payload_rank is None -> fall back to += 1 (unchanged behavior).
+        rank_sums = self._rank_sums([("diff", (torch.randn(16, 16),))])
+        self.assertEqual(rank_sums[0], 1)
+
+    def test_prepare_group_diffs_bare_tensor_stays_rank_1(self):
+        rank_sums = self._rank_sums([torch.randn(16, 16)])
+        self.assertEqual(rank_sums[0], 1)
+
+    # ---- end-to-end: avg_rank -> sum_rank -> compress_rank ----
+
+    def _run_inline(self, chain, settings):
+        applied = {}
+        model = _pipeline_model(_chain_patches(*chain), applied)
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": self.KEY}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            result = node.execute_inline(model, output_strength=1.0,
+                                         settings=settings)
+        return result["result"] if isinstance(result, dict) else result
+
+    def test_report_shows_true_avg_rank_not_one(self):
+        chain = (
+            (1.0, {self.KEY: _adapter(rank=32, out_dim=16, in_dim=16)}),
+            (0.7, {self.KEY: _adapter(rank=32, out_dim=16, in_dim=16)}),
+        )
+        settings = _advanced_settings(optimization_mode="global",
+                                      merge_strategy_override="weighted_sum")
+        report = self._run_inline(chain, settings)[2]
+        self.assertIn("Avg rank: 32", report)
+        self.assertNotIn("Avg rank: 1\n", report)   # the old always-1 bug
+
+    def test_compress_rank_not_floored_for_high_rank_chain(self):
+        # The user's actual regression: rank-64 + rank-128 captured LoRAs.
+        # True sum_rank = 64 + 128 = 192 -> compress_rank = max(192, 64) = 192.
+        # The bug reported avg_rank 1 each -> sum_rank 2 -> floored to 64,
+        # over-compressing the rank-128 LoRA.
+        chain = (
+            (1.0, {self.KEY: _adapter(rank=64, out_dim=16, in_dim=16)}),
+            (0.7, {self.KEY: _adapter(rank=128, out_dim=16, in_dim=16)}),
+        )
+        settings = _advanced_settings(optimization_mode="global",
+                                      merge_strategy_override="weighted_sum",
+                                      patch_compression="smart")
+        lora_data = self._run_inline(chain, settings)[4]
+        self.assertEqual(lora_data["sum_rank"], 192)   # NOT floored to 64
+
+
 if __name__ == "__main__":
     unittest.main()
