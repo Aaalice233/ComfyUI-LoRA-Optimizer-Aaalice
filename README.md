@@ -88,6 +88,7 @@ Restart ComfyUI. Nodes appear under the `loaders` category.
 | **LoRA Stack** / **(Dynamic)** | Build your list of LoRAs — pick files, set strengths |
 | **LoRA Optimizer** | Analyze + merge your stack automatically. Just connect and go |
 | **LoRA Optimizer (Inline Chain)** | Drop-in filter after regular Load LoRA nodes — merges their patches in place, no restacking |
+| **LoRA Inline Chain Options** | Optional side node for the Inline Chain optimizer — set per-LoRA enable/strength/conflict/preserve options |
 | **Settings Nodes** | Optional fine-tuning: sparsification, compression, smoothing, etc. |
 | **LoRA AutoTuner** | Sweep 2000+ parameter combos, rank the best configs |
 | **LoRA Merge Estimator** | Predict the best config via k-NN over the community cache — skip the sweep |
@@ -846,12 +847,15 @@ Drop-in filter for workflows built on **regular Load LoRA nodes** — no restack
 
 ```
 Load Checkpoint ──► Load LoRA #1 ──► Load LoRA #2 ──► ... ──► LoRA Optimizer (Inline Chain) ──► KSampler
-                                                               (reads, strips, merges, re-applies)
+                                                                      ▲   (reads, strips, merges, re-applies)
+                                          LoRA Inline Chain Options ──┘ chain_options (optional)
 ```
 
 **When to use it:** you already have a workflow full of Load LoRA nodes and want the optimizer's conflict-resolved merge without rebuilding it around a **LoRA Stack**. For new workflows, the Stack → Optimizer path is still preferred — loading from files gives the optimizer real names, metadata, and architecture auto-detection.
 
-**Slot order = chain order.** Slot #1 is the first Load LoRA in the chain (closest to the checkpoint). The report opens with per-LoRA chain fingerprints so you can verify the attribution:
+**Per-LoRA options live on the side node.** Connect a **LoRA Inline Chain Options** node to the inline node's `chain_options` input to set per-LoRA enable/strength/conflict/preserve options. **Leave `chain_options` unconnected to merge every captured LoRA with default options** — the inline node works standalone.
+
+**Slot order = chain order.** Slot #1 (on the options node) is the first Load LoRA in the chain (closest to the checkpoint). The report opens with per-LoRA chain fingerprints so you can verify the attribution:
 
 ```
 [Inline Optimizer] Detected loader chain (slot -> LoRA mapping):
