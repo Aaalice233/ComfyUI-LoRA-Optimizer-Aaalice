@@ -1622,6 +1622,31 @@ class TestInlineAutoTunerDelegation(unittest.TestCase):
                     "analysis report", {"td": 1}, {"ld": 2})
         node._autotuner_delegate = types.SimpleNamespace(auto_tune=fake_auto_tune)
 
+    def test_autotune_threads_model_class_arch_hint(self):
+        """auto_tune must pass the model-class arch hint to _normalize_stack so
+        captured chains score candidates under the right preset (was hintless →
+        attention-only Qwen scored under the ACE-Step preset)."""
+        class QwenImage:  # mirrors comfy.model_base.QwenImage
+            pass
+        model = _FakePatcher({})
+        model.model = QwenImage()
+        delegate = lora_optimizer.LoRAAutoTuner()
+        seen = {}
+
+        class _Stop(Exception):
+            pass
+
+        def rec_normalize(stack, normalize_keys="disabled", _arch_hint=None):
+            seen["hint"] = _arch_hint
+            raise _Stop
+
+        delegate._normalize_stack = rec_normalize
+        stack = [{"name": "chain lora #1 [x]", "lora": {"k": _adapter()},
+                  "strength": 1.0, "_precomputed_diffs": True}]
+        with self.assertRaises(_Stop):
+            delegate.auto_tune(model, stack, 1.0)
+        self.assertEqual(seen.get("hint"), "qwen_image")
+
     def test_delegates_with_virtual_stack_and_stripped_model(self):
         model = self._model(_chain_patches(
             (0.8, {"a": _adapter()}), (0.5, {"a": _adapter()})))

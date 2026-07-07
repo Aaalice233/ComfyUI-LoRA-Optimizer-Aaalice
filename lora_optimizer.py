@@ -11572,7 +11572,13 @@ class LoRAAutoTuner(LoRAOptimizer):
             lora_stack = clean_stack
 
         # --- Normalize & validate stack ---
-        normalized_stack = self._normalize_stack(lora_stack, normalize_keys=normalize_keys)
+        # Pass the model-class arch hint so captured (inline) chains score
+        # candidates under the correct preset (else key-based detection
+        # mis-tags e.g. attention-only Qwen as ACE-Step). File-based stacks
+        # have no virtual items, so the hint is unreachable — identical.
+        normalized_stack = self._normalize_stack(
+            lora_stack, normalize_keys=normalize_keys,
+            _arch_hint=self._model_class_arch(model))
         active_loras = [item for item in normalized_stack if item["strength"] != 0]
         if not active_loras:
             return (model, clip, "No active LoRAs in stack.", "", None, None)
