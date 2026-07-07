@@ -24,12 +24,10 @@ const SLOT_WIDGET_NAMES = [
 // re-pads old saves to the new layout — see migrateWidgetsValues() in
 // lora_stack_dynamic.js for the pattern. Baseline layout constants for that
 // future migration:
-//   CONTROL_WIDGET_COUNT = 4   // settings_visibility, lora_count,
-//                              // output_strength, clip_strength_multiplier
+//   CONTROL_WIDGET_COUNT = 2   // settings_visibility, lora_count
 //   PER_SLOT = 7               // SLOT_WIDGET_NAMES above, x 10 slots
 //   TRAILING_WIDGET_COUNT = 0
-// (model / clip / settings are input sockets, not widgets — they never
-// appear in widgets_values.)
+// (This node is pure widgets — chain_options is its OUTPUT, not a widget.)
 
 function toggleWidget(node, widget, show, suffix = "") {
     if (!widget) return;
@@ -115,9 +113,9 @@ function updateVisibility(node) {
 // --- Node Registration ---
 
 app.registerExtension({
-    name: "LoRAOptimizer.LoRAOptimizerInline",
+    name: "LoRAOptimizer.LoRAInlineChainOptions",
     nodeCreated(node) {
-        if (node.comfyClass !== "LoRAOptimizerInline") return;
+        if (node.comfyClass !== "LoRAInlineChainOptions") return;
 
         // Re-apply visibility after workflow restore: configure() overwrites
         // settings_visibility / lora_count with the saved values.
