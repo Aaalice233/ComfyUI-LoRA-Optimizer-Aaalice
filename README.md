@@ -870,10 +870,9 @@ Load Checkpoint ──► Load LoRA #1 ──► Load LoRA #2 ──► ... ─�
 | `model_strength` / `clip_strength` (advanced) | Separate multipliers for the model and text-encoder branches |
 | `conflict_mode` / `key_filter` / `preserve` (advanced) | Same per-LoRA controls as **LoRA Stack (Dynamic)** |
 
-Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node (advanced mode) is supported via the `settings` input.
+Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node is supported via the `settings` input in **both** advanced mode and **AutoTuner mode** — the AutoTuner's multi-candidate search, memory mode, and community cache all run on captured chains (captured LoRAs get a stable content-based identity, so memory/community hits work across sessions).
 
 **v1 limitations:**
-- **AutoTuner settings are not supported** — an AutoTuner-mode Settings node falls back to optimizer defaults (noted in the report).
 - **Fully-disjoint LoRAs at identical strengths** may be grouped or ordered ambiguously — the chain fingerprints reveal it when it happens.
 - **Model↔CLIP pairing is by chain order** — a `LoraLoaderModelOnly` or a TE-only LoRA file in the chain can shift clip attribution; the report warns when the model/clip group counts differ.
 - **Architecture detection reports `unknown` for inline capture** — set `architecture_preset` via a Settings node to get arch-tuned thresholds.

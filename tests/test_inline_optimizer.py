@@ -574,18 +574,6 @@ class TestInlineExecute(unittest.TestCase):
         self.assertIn("3 option slots but only 1 LoRA", report)
         self.assertIn("extra slots ignored", report)
 
-    def test_autotuner_settings_fall_back_to_defaults(self):
-        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
-        node = self._node()
-        seen = {}
-        self._capture_merge(node, seen)
-        result = node.execute_inline(model, output_strength=1.0,
-                                     settings={"mode": "autotuner", "top_n": 3})
-        report = self._out(result)[2]
-        self.assertIn("AutoTuner settings are not supported inline", report)
-        self.assertNotIn("top_n", seen)                      # defaults used
-        self.assertEqual(seen["normalize_keys"], "disabled")
-
     def test_advanced_settings_delegated_normalize_keys_pinned(self):
         settings = {
             "mode": "advanced",
@@ -1403,6 +1391,254 @@ class TestInlineRankReporting(unittest.TestCase):
                                       patch_compression="smart")
         lora_data = self._run_inline(chain, settings)[4]
         self.assertEqual(lora_data["sum_rank"], 192)   # NOT floored to 64
+
+
+def _autotuner_settings(**overrides):
+    """Complete OPTIMIZER_SETTINGS autotuner-mode dict, mirroring what the
+    AutoTuner Settings node (build_settings) emits — with cheap, deterministic
+    knobs. execute_inline reads the bracket-keyed fields to build the auto_tune
+    call, so a partial dict would KeyError before auto_tune is even reached."""
+    settings = {
+        "mode": "autotuner",
+        "top_n": 1,
+        "scoring_svd": "disabled",
+        "scoring_device": "cpu",
+        "scoring_speed": "full",
+        "scoring_formula": "v2",
+        "output_mode": "merge",
+        "smooth_slerp_gate": False,
+        "normalize_keys": "enabled",     # must be overridden to disabled
+        "architecture_preset": "auto",
+        "auto_strength_floor": -1.0,
+        "decision_smoothing": 0.25,
+        "vram_budget": 0.0,
+        "cache_patches": "disabled",
+        "star_eta": 100.0,
+        "tame_layers": 0.0,
+        "tame_threshold": 0.3,
+        "diff_cache_mode": "disabled",
+        "diff_cache_ram_pct": 0.5,
+        "community_cache": "disabled",
+        "evaluator": None,
+        "memory_mode": "disabled",
+        "selection": 1,
+        "record_dataset": "disabled",
+    }
+    settings.update(overrides)
+    return settings
+
+
+class TestInlineAutoTunerDelegation(unittest.TestCase):
+    """Commit B: mode='autotuner' settings now delegate to the real AutoTuner
+    on the inline-prepared STRIPPED model/clip + VIRTUAL stack, forcing
+    normalize_keys off, instead of falling back to optimizer defaults."""
+
+    def _node(self):
+        return lora_optimizer.LoRAOptimizerInline()
+
+    def _model(self, patches):
+        m = _FakePatcher(patches)
+        m.model = types.SimpleNamespace()
+        return m
+
+    @staticmethod
+    def _out(result):
+        return result["result"] if isinstance(result, dict) else result
+
+    def _stub_delegate(self, node, seen):
+        """Pre-seed node._autotuner_delegate with a recorder so execute_inline
+        reuses it instead of building a real LoRAAutoTuner."""
+        def fake_auto_tune(model, stack, output_strength, **kw):
+            seen["model"] = model
+            seen["stack"] = stack
+            seen["output_strength"] = output_strength
+            seen.update(kw)
+            return (model, kw.get("clip"), "tuner report",
+                    "analysis report", {"td": 1}, {"ld": 2})
+        node._autotuner_delegate = types.SimpleNamespace(auto_tune=fake_auto_tune)
+
+    def test_delegates_with_virtual_stack_and_stripped_model(self):
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"a": _adapter()})))
+        node = self._node()
+        node.optimize_merge = lambda *a, **k: self.fail(
+            "optimize_merge must not run in autotuner mode")
+        seen = {}
+        self._stub_delegate(node, seen)
+        node.execute_inline(model, output_strength=1.0,
+                            settings=_autotuner_settings())
+        # VIRTUAL stack (precomputed diffs) ...
+        self.assertEqual(len(seen["stack"]), 2)
+        self.assertTrue(all(i["_precomputed_diffs"] for i in seen["stack"]))
+        # ... STRIPPED model (patches removed, not the raw input) ...
+        self.assertEqual(seen["model"].patches, {})
+        self.assertIsNot(seen["model"], model)
+        # ... normalize_keys forced off despite settings "enabled"
+        self.assertEqual(seen["normalize_keys"], "disabled")
+        self.assertAlmostEqual(seen["output_strength"], 1.0)
+
+    def test_return_is_inline_5_tuple_with_fingerprint_prepended(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter(), "b": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._stub_delegate(node, seen)
+        out = self._out(node.execute_inline(model, output_strength=1.0,
+                                            settings=_autotuner_settings()))
+        self.assertEqual(len(out), 5)      # inline 5-tuple, not auto_tune's 6
+        report = out[2]
+        self.assertIn("Detected loader chain", report)          # fingerprint
+        self.assertLess(report.index("Detected loader chain"),
+                        report.index("tuner report"))            # prepended
+        self.assertIn("ANALYSIS REPORT", report)                # analysis folded in
+        self.assertIn("analysis report", report)
+        self.assertEqual(out[3], {"td": 1})                     # tuner_data
+        self.assertEqual(out[4], {"ld": 2})                     # lora_data
+
+    def test_forwards_settings_fields_to_auto_tune(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._stub_delegate(node, seen)
+        node.execute_inline(model, output_strength=1.0,
+                            settings=_autotuner_settings(
+                                top_n=3, memory_mode="auto",
+                                community_cache="upload_and_download",
+                                architecture_preset="dit", cache_patches="enabled"))
+        self.assertEqual(seen["top_n"], 3)
+        self.assertEqual(seen["memory_mode"], "auto")
+        self.assertEqual(seen["community_cache"], "upload_and_download")
+        self.assertEqual(seen["architecture_preset"], "dit")
+        self.assertEqual(seen["cache_patches"], "enabled")   # forwarded from settings
+
+    def test_passes_stripped_clip_original_untouched(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        clip = _FakeCLIP(_FakePatcher(_chain_patches((0.6, {"te.a": _adapter()}))))
+        node = self._node()
+        seen = {}
+        self._stub_delegate(node, seen)
+        node.execute_inline(model, output_strength=1.0, clip=clip,
+                            settings=_autotuner_settings())
+        self.assertIsNot(seen["clip"], clip)                 # stripped clone
+        self.assertEqual(seen["clip"].patcher.patches, {})
+        self.assertEqual(len(clip.patcher.patches["te.a"]), 1)  # original intact
+
+    def test_old_not_supported_message_gone(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._stub_delegate(node, seen)
+        report = self._out(node.execute_inline(
+            model, output_strength=1.0, settings=_autotuner_settings()))[2]
+        self.assertNotIn("AutoTuner settings are not supported inline", report)
+        self.assertNotIn("using optimizer defaults", report)
+
+    def test_pinned_preset_suppresses_arch_unknown_warning(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._stub_delegate(node, seen)
+        report = self._out(node.execute_inline(
+            model, output_strength=1.0,
+            settings=_autotuner_settings(architecture_preset="dit")))[2]
+        self.assertNotIn("architecture: unknown", report)
+
+    def test_delegate_created_lazily_and_reused(self):
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        self.assertFalse(hasattr(node, "_autotuner_delegate"))
+        with mock.patch.object(lora_optimizer.LoRAAutoTuner, "auto_tune",
+                               return_value=(model, None, "r", "", None, None)) as m:
+            node.execute_inline(model, output_strength=1.0,
+                                settings=_autotuner_settings())
+            delegate = node._autotuner_delegate
+            self.assertIsInstance(delegate, lora_optimizer.LoRAAutoTuner)
+            node.execute_inline(model, output_strength=1.0,
+                                settings=_autotuner_settings())
+        self.assertIs(node._autotuner_delegate, delegate)   # reused, not recreated
+        self.assertEqual(m.call_count, 2)
+
+    def test_advanced_mode_still_uses_optimize_merge(self):
+        # Regression: advanced mode is untouched — it must still route through
+        # optimize_merge (not the AutoTuner) with normalize_keys pinned off.
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        def fake_merge(m, stack, output_strength, **kw):
+            seen.update(kw)
+            seen["stack"] = stack
+            return (m, kw.get("clip"), "engine report", None, None)
+        node.optimize_merge = fake_merge
+        node._autotuner_delegate = types.SimpleNamespace(
+            auto_tune=lambda *a, **k: self.fail("auto_tune called in advanced mode"))
+        node.execute_inline(model, output_strength=1.0, settings=_advanced_settings())
+        self.assertEqual(seen["normalize_keys"], "disabled")
+        self.assertIn("stack", seen)
+
+    def test_no_settings_path_still_uses_optimize_merge(self):
+        # Regression: no settings -> plain optimize_merge, no AutoTuner.
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        def fake_merge(m, stack, output_strength, **kw):
+            seen.update(kw)
+            return (m, kw.get("clip"), "engine report", None, None)
+        node.optimize_merge = fake_merge
+        node._autotuner_delegate = types.SimpleNamespace(
+            auto_tune=lambda *a, **k: self.fail("auto_tune called with no settings"))
+        node.execute_inline(model, output_strength=1.0)
+        self.assertEqual(seen["normalize_keys"], "disabled")
+
+
+class TestInlineAutoTunerEndToEnd(unittest.TestCase):
+    """The REAL AutoTuner runs a tiny search over a 2-captured-LoRA chain and
+    returns a merged, re-applied model — proving auto_tune tolerates virtual
+    (_precomputed_diffs) items end to end, with no file reload."""
+
+    KEY = "layer.weight"
+
+    def test_two_lora_chain_autotunes_and_reapplies(self):
+        up_a = torch.linspace(-1.0, 1.0, 16 * 4).reshape(16, 4)
+        down_a = torch.linspace(0.5, -0.5, 4 * 16).reshape(4, 16)
+        up_b = torch.linspace(-0.8, 1.2, 16 * 4).reshape(16, 4)
+        down_b = torch.linspace(0.3, -0.7, 4 * 16).reshape(4, 16)
+        chain = (
+            (1.0, {self.KEY: _adapter(up=up_a, down=down_a)}),
+            (0.7, {self.KEY: _adapter(up=up_b, down=down_b)}),
+        )
+        applied = {}
+        model = _pipeline_model(_chain_patches(*chain), applied)
+        orig_entries = {k: list(v) for k, v in model.patches.items()}
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": self.KEY}
+        # The merge runs on the delegate (a separate LoRAAutoTuner), so the
+        # key-alias override the fake model needs must live there too. In
+        # production both share the real _get_model_keys against a real model.
+        node._autotuner_delegate = lora_optimizer.LoRAAutoTuner()
+        node._autotuner_delegate._get_model_keys = lambda m: {"alias_layer": self.KEY}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            result = node.execute_inline(
+                model, output_strength=1.0,
+                settings=_autotuner_settings(architecture_preset="dit"))
+        out = result["result"] if isinstance(result, dict) else result
+        # a real AutoTuner ran the search
+        self.assertIsInstance(node._autotuner_delegate,
+                              lora_optimizer.LoRAAutoTuner)
+        self.assertEqual(calls, [])                   # no single-LoRA fast-path
+        # merged patch re-applied on a clone for the shared key
+        self.assertIn("patches", applied)
+        self.assertEqual(set(applied["patches"]), {self.KEY})
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
+            applied["patches"][self.KEY])
+        self.assertEqual(tuple(got.shape), (16, 16))
+        self.assertTrue(torch.isfinite(got).all())
+        self.assertGreater(got.abs().max().item(), 0.0)
+        # inline 5-tuple with the fingerprint prepended
+        self.assertEqual(len(out), 5)
+        self.assertIn("Detected loader chain", out[2])
+        # input model untouched (pre-run snapshot)
+        self.assertEqual(model.patches[self.KEY], orig_entries[self.KEY])
 
 
 class TestCapturedContentHash(unittest.TestCase):

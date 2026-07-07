@@ -9541,8 +9541,9 @@ class LoRAOptimizerInline(LoRAOptimizer):
                                "patches are merged too."
                 }),
                 "settings": ("OPTIMIZER_SETTINGS", {
-                    "tooltip": "Optimizer Settings node for full control (advanced "
-                               "mode). AutoTuner mode is not supported inline."
+                    "tooltip": "Optimizer Settings node for full control. Both "
+                               "advanced mode and AutoTuner mode (search / "
+                               "memory / community) are supported inline."
                 }),
                 "chain_options": ("LORA_CHAIN_OPTIONS", {
                     "tooltip": "Connect a LoRA Inline Chain Options node to set "
@@ -9743,6 +9744,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
                             # enabled cache only pins one stale merged-patch
                             # set in RAM per instance. Pinned off.
                             cache_patches="disabled")
+        autotuner_mode = False
         autotuner_fallback = False
         if settings is not None and settings.get("mode") == "advanced":
             # Shared mapping with LoRAOptimizerSimple (single source of
@@ -9751,9 +9753,16 @@ class LoRAOptimizerInline(LoRAOptimizer):
             merge_kwargs.update(self._advanced_merge_kwargs(settings))
             merge_kwargs["normalize_keys"] = "disabled"
             merge_kwargs["cache_patches"] = "disabled"
+        elif settings is not None and settings.get("mode") == "autotuner":
+            # Captured chains now get the full AutoTuner (search / memory /
+            # community): the stable content hash gives virtual items a
+            # persistent identity, and auto_tune runs candidates through
+            # optimize_merge (which handles _precomputed_diffs) off the passed
+            # stack — it never reloads from files. Delegated below, after the
+            # fingerprint is built.
+            autotuner_mode = True
         elif settings is not None:
-            # AutoTuner's caches key on file identity, which virtual chain
-            # items don't have — v1 falls back to optimizer defaults.
+            # Genuinely unknown settings mode — fall back to optimizer defaults.
             autotuner_fallback = True
 
         # Only surface the "slots vs LoRAs detected" note when an options node
@@ -9777,14 +9786,67 @@ class LoRAOptimizerInline(LoRAOptimizer):
         arch_display = detected_arch if detected_arch != "unknown" else None
         # Warn only when detection genuinely fails AND no preset is pinned via a
         # Settings node (an explicit preset resolves regardless of detection).
+        # Advanced mode pins it into merge_kwargs; autotuner mode reads it
+        # straight off the settings dict (it doesn't touch merge_kwargs).
         preset_pinned = merge_kwargs.get("architecture_preset", "auto") != "auto"
+        if autotuner_mode:
+            preset_pinned = settings.get("architecture_preset", "auto") != "auto"
         fingerprint = self._chain_fingerprint(
             model_groups, clip_groups, fp_lora_count, passthrough,
             arch_unknown=(arch_display is None and not preset_pinned),
             arch_display=arch_display)
         if autotuner_fallback:
-            fingerprint += ("[Inline Optimizer] AutoTuner settings are not "
-                            "supported inline — using optimizer defaults.\n\n")
+            fingerprint += ("[Inline Optimizer] Unknown settings mode — using "
+                            "optimizer defaults.\n\n")
+
+        if autotuner_mode:
+            # Delegate to the AutoTuner exactly like LoRAOptimizerSimple's
+            # autotuner branch, but on the inline-prepared STRIPPED model/clip
+            # and the VIRTUAL stack (never the raw model / original chain), and
+            # force normalize_keys off — captured keys are already model-
+            # canonical, so re-normalizing would corrupt them.
+            if not hasattr(self, '_autotuner_delegate'):
+                self._autotuner_delegate = LoRAAutoTuner()
+            result = self._autotuner_delegate.auto_tune(
+                stripped_model, stack, output_strength,
+                clip=stripped_clip, clip_strength_multiplier=clip_strength_multiplier,
+                top_n=settings["top_n"],
+                scoring_svd=settings["scoring_svd"],
+                scoring_device=settings["scoring_device"],
+                scoring_speed=settings["scoring_speed"],
+                scoring_formula=settings.get("scoring_formula", "v2"),
+                output_mode=settings["output_mode"],
+                smooth_slerp_gate=settings["smooth_slerp_gate"],
+                star_eta=settings.get("star_eta", 100.0),
+                tame_layers=settings.get("tame_layers", 0.0),
+                tame_threshold=settings.get("tame_threshold", 0.3),
+                # Captured keys are already canonical — never re-normalize,
+                # regardless of the settings value.
+                normalize_keys="disabled",
+                architecture_preset=settings["architecture_preset"],
+                auto_strength_floor=settings["auto_strength_floor"],
+                decision_smoothing=settings["decision_smoothing"],
+                vram_budget=settings["vram_budget"],
+                cache_patches=settings["cache_patches"],
+                diff_cache_mode=settings["diff_cache_mode"],
+                diff_cache_ram_pct=settings["diff_cache_ram_pct"],
+                community_cache=settings.get("community_cache", "disabled"),
+                evaluator=settings.get("evaluator"),
+                memory_mode=settings.get("memory_mode", "disabled"),
+                selection=settings.get("selection", 1),
+                record_dataset=settings.get("record_dataset", "disabled"),
+            )
+            # Map the 6-tuple AutoTuner return to the inline node's 5-tuple
+            # (model, clip, report, tuner_data, lora_data), mirroring
+            # execute_simple, then prepend the chain fingerprint.
+            at_model, at_clip, report, analysis_report, at_tuner_data, at_lora_data = result
+            combined_report = report
+            if analysis_report:
+                combined_report = (f"{report}\n\n{'=' * 50}\nANALYSIS REPORT\n"
+                                   f"{'=' * 50}\n{analysis_report}")
+            return self._prepend_report(
+                (at_model, at_clip, combined_report, at_tuner_data, at_lora_data),
+                fingerprint)
 
         # optimize_merge clones the stripped model/clip again and add_patches
         # the merged result — that is the intended re-apply path.
