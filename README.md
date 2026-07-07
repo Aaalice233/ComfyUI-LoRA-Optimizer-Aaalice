@@ -870,7 +870,12 @@ Load Checkpoint ──► Load LoRA #1 ──► Load LoRA #2 ──► ... ─�
 | `model_strength` / `clip_strength` (advanced) | Separate multipliers for the model and text-encoder branches |
 | `conflict_mode` / `key_filter` / `preserve` (advanced) | Same per-LoRA controls as **LoRA Stack (Dynamic)** |
 
-Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node is supported via the `settings` input in **both** advanced mode and **AutoTuner mode** — the AutoTuner's multi-candidate search, memory mode, and community cache all run on captured chains (captured LoRAs get a stable content-based identity, so memory/community hits work across sessions).
+Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node is supported via the `settings` input in **both** advanced mode and **AutoTuner mode** — the AutoTuner's multi-candidate search, memory, and community cache all run on captured chains. Captured LoRAs have no file on disk, so their identity is derived from a hash of the captured weights.
+
+**What that means for memory and community caching inline:**
+- **Memory persists across sessions.** The content-based identity is stable across ComfyUI restarts, so a chain you tuned once is found again on the next run (unlike the per-session capture names, which change every restart).
+- **Community caching is a separate namespace from file-based LoRAs.** An inline-captured content hash is a hash of the *captured weights*, not the *file bytes* a file-based LoRA-Stack run hashes — so the two never collide. Inline chains share configs with **other inline chains** of the same content, but **not** with file-based LoRA-Stack recordings of the "same" LoRA (this is by design — you chose the inline path).
+- **Inline community sharing assumes the same ComfyUI version.** The captured factors and key names depend on comfy's key-mapping / QKV-fusion, so a hash is only comparable across machines running the same comfy build.
 
 **v1 limitations:**
 - **Fully-disjoint LoRAs at identical strengths** may be grouped or ordered ambiguously — the chain fingerprints reveal it when it happens.

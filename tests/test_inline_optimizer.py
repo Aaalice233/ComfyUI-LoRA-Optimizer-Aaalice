@@ -1503,12 +1503,23 @@ class TestInlineAutoTunerDelegation(unittest.TestCase):
                             settings=_autotuner_settings(
                                 top_n=3, memory_mode="auto",
                                 community_cache="upload_and_download",
-                                architecture_preset="dit", cache_patches="enabled"))
+                                architecture_preset="dit"))
         self.assertEqual(seen["top_n"], 3)
         self.assertEqual(seen["memory_mode"], "auto")
         self.assertEqual(seen["community_cache"], "upload_and_download")
         self.assertEqual(seen["architecture_preset"], "dit")
-        self.assertEqual(seen["cache_patches"], "enabled")   # forwarded from settings
+
+    def test_cache_patches_pinned_disabled_for_delegate(self):
+        # cache_patches is NOT forwarded from settings — the delegate's in-node
+        # cache can never usefully hit for inline and reintroduces id()-reuse
+        # staleness, so it is pinned off regardless of the settings value.
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._stub_delegate(node, seen)
+        node.execute_inline(model, output_strength=1.0,
+                            settings=_autotuner_settings(cache_patches="enabled"))
+        self.assertEqual(seen["cache_patches"], "disabled")
 
     def test_passes_stripped_clip_original_untouched(self):
         model = self._model(_chain_patches((0.8, {"a": _adapter()})))

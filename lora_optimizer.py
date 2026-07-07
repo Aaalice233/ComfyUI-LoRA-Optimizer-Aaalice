@@ -9835,7 +9835,11 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 auto_strength_floor=settings["auto_strength_floor"],
                 decision_smoothing=settings["decision_smoothing"],
                 vram_budget=settings["vram_budget"],
-                cache_patches=settings["cache_patches"],
+                # Pinned off (not forwarded from settings): the delegate's
+                # in-node patch cache keys on id() of the fresh stripped clone,
+                # so it can never usefully hit for inline AND reintroduces the
+                # id()-reuse staleness window the node pins off for its own path.
+                cache_patches="disabled",
                 diff_cache_mode=settings["diff_cache_mode"],
                 diff_cache_ram_pct=settings["diff_cache_ram_pct"],
                 community_cache=settings.get("community_cache", "disabled"),
