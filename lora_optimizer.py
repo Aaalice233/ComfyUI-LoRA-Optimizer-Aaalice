@@ -6739,12 +6739,75 @@ class LoRAOptimizer(_LoRAMergeBase):
             "reasoning": reasoning,
         }
 
+    @staticmethod
+    def _virtual_payload_is_linear_ok(payload):
+        """True if a captured payload is a plain 2D LoRAAdapter (no LoCon mid) —
+        the only shape the low-rank concat fast path can emit bit-equivalently
+        (within float tol) of the dense expand. LoKr/LoHa/dense-tensor/
+        ("diff",…)/mid!=None/non-2D payloads return False and keep their group
+        on the dense _prepare_group_diffs path."""
+        if not isinstance(payload, LoRAAdapter):
+            return False
+        # LoKr/LoHa are sibling classes, not LoRAAdapter subclasses; be explicit
+        # in case a future comfy makes them subclass a shared base.
+        if isinstance(payload, (LoKrAdapter, LoHaAdapter)):
+            return False
+        w = getattr(payload, "weights", None)
+        if not isinstance(w, (tuple, list)) or len(w) < 4:
+            return False
+        up, down, mid = w[0], w[1], w[3]
+        if mid is not None:
+            return False
+        if not (isinstance(up, torch.Tensor) and isinstance(down, torch.Tensor)):
+            return False
+        return up.dim() == 2 and down.dim() == 2
+
+    def _virtual_group_is_linear_ok(self, target_group, active_loras, model, clip):
+        """True iff every captured (virtual) contributor to this group is a
+        plain 2D LoRAAdapter targeting a 2D linear weight — the exact case the
+        low-rank concat fast path reproduces (within float tol) of the dense
+        _prepare_group_diffs + _merge_diffs path. Any LoKr/LoHa/dense/mid!=None
+        contributor, an offset-sliced (tuple) target key, or a non-2D target
+        keeps the whole group on the dense path (returns False). A group with no
+        virtual contributor returns True — the file path is left untouched."""
+        target_key = target_group["target_key"]
+        # Offset/sliced targets (e.g. Z-Image QKV refusion) reshape the dense
+        # diff to a slice; the low-rank concat can't reproduce that. Keep dense.
+        if isinstance(target_key, tuple):
+            return False
+        has_virtual = False
+        for item in active_loras:
+            if not item.get("_precomputed_diffs"):
+                continue
+            payload = item["lora"].get(target_key)
+            if payload is None:
+                continue  # this virtual item doesn't touch this group
+            has_virtual = True
+            if not self._virtual_payload_is_linear_ok(payload):
+                return False
+        if not has_virtual:
+            return True
+        # Confirm the resolved target weight is a 2D linear so up@down maps 1:1
+        # (a 4D conv target would reshape in the dense path but not here).
+        try:
+            target_shape = self._resolve_target_shape(
+                target_key, target_group["is_clip"], model, clip)
+        except (AttributeError, RuntimeError, IndexError):
+            return False
+        return len(target_shape) == 2
+
     def _build_exact_linear_patch(self, target_group, active_loras, raw_n_loras,
                                   mode, is_clip_key=False, model_scale=1.0):
         """
         Build an exact low-rank patch for linear merges by concatenating factors
         instead of materializing a dense diff. Falls back to None when the group
         contains unsupported parameterizations (for example LoCon mid matrices).
+
+        Handles both file items (trainer-format lora_up/down keys, read by
+        alias) and captured/virtual items (_precomputed_diffs: a LoRAAdapter
+        payload keyed by the model target key). Virtual items must first pass
+        _virtual_group_is_linear_ok at the call site; the per-payload guard here
+        is a defensive re-check that falls back to dense on anything unexpected.
         """
         if mode not in ("weighted_sum", "weighted_average", "normalize"):
             return None
@@ -6774,19 +6837,45 @@ class LoRAOptimizer(_LoRAMergeBase):
                 base_weight = item["strength"] * model_scale
 
             contributed = False
-            for alias in target_group["aliases"]:
-                lora_info = self._get_lora_key_info(item["lora"], alias)
-                if lora_info is None:
-                    # Check if this alias has LoKr/LoHa keys — can't represent
-                    # as low-rank factors, fall through to dense diff path
-                    if self._has_lokr_keys(item["lora"], alias) or self._has_loha_keys(item["lora"], alias):
+            if item.get("_precomputed_diffs"):
+                # Captured chain item: its lora dict maps the MODEL TARGET KEY ->
+                # adapter payload (not trainer-format {prefix}.lora_up keys), so
+                # read the factors by target key (mirrors _prepare_group_diffs'
+                # virtual branch, including the tuple fallback). Only plain 2D
+                # LoRAAdapters are eligible; anything else falls back to dense.
+                tk = target_group["target_key"]
+                payload = item["lora"].get(tk)
+                if payload is None and isinstance(tk, tuple):
+                    payload = item["lora"].get(tk[0])
+                if payload is not None:
+                    if not self._virtual_payload_is_linear_ok(payload):
                         return None
-                    continue
-                mat_up, mat_down, alpha, mid = lora_info
-                if mid is not None:
-                    return None
-                pieces.append((i, mat_up, mat_down, alpha))
-                contributed = True
+                    mat_up, mat_down = payload.weights[0], payload.weights[1]
+                    alpha = payload.weights[2]
+                    if isinstance(alpha, torch.Tensor):
+                        alpha = alpha.item()
+                    # alpha=None -> scale 1.0. Fold it as alpha==rank so the
+                    # shared piece_scale = weight * (alpha/rank) below reproduces
+                    # _expand_patch_to_diff's (alpha/rank if alpha is not None
+                    # else 1.0) exactly — the dense path's per-LoRA scale.
+                    if alpha is None:
+                        alpha = mat_down.shape[0]
+                    pieces.append((i, mat_up, mat_down, alpha))
+                    contributed = True
+            else:
+                for alias in target_group["aliases"]:
+                    lora_info = self._get_lora_key_info(item["lora"], alias)
+                    if lora_info is None:
+                        # Check if this alias has LoKr/LoHa keys — can't represent
+                        # as low-rank factors, fall through to dense diff path
+                        if self._has_lokr_keys(item["lora"], alias) or self._has_loha_keys(item["lora"], alias):
+                            return None
+                        continue
+                    mat_up, mat_down, alpha, mid = lora_info
+                    if mid is not None:
+                        return None
+                    pieces.append((i, mat_up, mat_down, alpha))
+                    contributed = True
 
             if contributed:
                 lora_weights[i] = base_weight
@@ -8228,8 +8317,18 @@ class LoRAOptimizer(_LoRAMergeBase):
             _single_lora_group = pf_n_loras == 1  # exactly one contributor
             _linear_quality_ok = (sparsification == "disabled"
                                   and merge_refinement == "none")
+            # Captured (virtual) chains were previously excluded wholesale by
+            # has_virtual_loras, forcing every group through the dense
+            # _prepare_group_diffs materialize (~10x slower on inline AutoTuner
+            # sweeps). Allow the fast path for virtual groups that qualify —
+            # every captured contributor is a plain 2D LoRAAdapter (mid None)
+            # on a 2D linear target — which _build_exact_linear_patch emits
+            # bit-equivalently. Non-qualifying virtual groups keep the dense
+            # path (the check returns False, or the builder bails to None).
             if (pf_mode in ("weighted_sum", "weighted_average", "normalize")
-                    and not has_virtual_loras
+                    and (not has_virtual_loras
+                         or self._virtual_group_is_linear_ok(
+                             target_group, active_loras, model, clip))
                     and not stack_has_preserve
                     and (_single_lora_group or _linear_quality_ok)):
                 _t_lin = _prof_t() if _merge_prof is not None else 0.0

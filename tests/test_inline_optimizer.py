@@ -990,6 +990,195 @@ class TestVirtualDiffDeviceExpansion(unittest.TestCase):
         self.assertTrue(torch.allclose(got.cpu(), up @ down, atol=1e-5))
 
 
+class TestVirtualLinearFastPath(unittest.TestCase):
+    """Commit A: captured LoRAAdapter chains take the exact low-rank concat
+    fast path (like file items) instead of materializing a dense diff per
+    contributor. The emitted low-rank patch, reconstructed, must equal the
+    dense _prepare_group_diffs + _merge_diffs result bit-for-bit (float tol)."""
+
+    KEY = "layer.weight"
+
+    def setUp(self):
+        self.opt = lora_optimizer.LoRAOptimizer()
+
+    def _group(self):
+        return {"target_key": self.KEY, "is_clip": False,
+                "aliases": [self.KEY], "label_prefix": self.KEY}
+
+    def _dense(self, active, mode, model, scale=1.0):
+        prepared = self.opt._prepare_group_diffs(
+            self._group(), active, model, None, torch.device("cpu"),
+            auto_scale=scale)
+        idx = sorted(prepared["diffs"])
+        diffs_list = [(prepared["diffs"][i], prepared["eff_strengths"][i])
+                      for i in idx]
+        return self.opt._merge_diffs(diffs_list, mode)
+
+    def _fast(self, active, mode, model, scale=1.0):
+        info = self.opt._build_exact_linear_patch(
+            self._group(), active, len(active), mode, model_scale=scale)
+        self.assertIsNotNone(info, "fast path unexpectedly fell back to dense")
+        return info, self.opt._expand_patch_to_diff(info["patch"])
+
+    def _assert_equiv(self, active, mode, model, scale=1.0):
+        dense = self._dense(active, mode, model, scale)
+        _info, recon = self._fast(active, mode, model, scale)
+        self.assertEqual(tuple(recon.shape), tuple(dense.shape))
+        self.assertTrue(
+            torch.allclose(recon, dense, atol=1e-6),
+            f"mode={mode} scale={scale} max err "
+            f"{(recon - dense).abs().max().item()}")
+
+    # ---- numerical equivalence across adapter configs --------------------
+    def test_single_lora_weighted_sum(self):
+        up = torch.randn(8, 2)
+        down = torch.randn(2, 8)
+        active = [_virtual_item({self.KEY: _lora_adapter(up, down, 2.0)},
+                                strength=0.8)]
+        self._assert_equiv(active, "weighted_sum", _layer_model())
+
+    def test_two_lora_weighted_sum_alpha_eq_rank(self):
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), 2.0)},
+                          strength=1.0),
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 3),
+                                                   torch.randn(3, 8), 3.0)},
+                          strength=0.7),
+        ]
+        self._assert_equiv(active, "weighted_sum", _layer_model())
+
+    def test_two_lora_weighted_average(self):
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), 2.0)},
+                          strength=1.3),
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), 2.0)},
+                          strength=0.4),
+        ]
+        self._assert_equiv(active, "weighted_average", _layer_model())
+
+    def test_two_lora_normalize(self):
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), 2.0)},
+                          strength=1.1),
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), 2.0)},
+                          strength=0.9),
+        ]
+        self._assert_equiv(active, "normalize", _layer_model())
+
+    def test_alpha_none_scale_one(self):
+        # alpha=None -> scale 1.0 in both paths
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), None)},
+                          strength=1.0),
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), None)},
+                          strength=0.6),
+        ]
+        self._assert_equiv(active, "weighted_sum", _layer_model())
+
+    def test_alpha_ne_rank_rescales(self):
+        # rank 4 but alpha 2.0 -> scale 0.5, must fold identically
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 4),
+                                                   torch.randn(4, 8), 2.0)},
+                          strength=1.0),
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 4),
+                                                   torch.randn(4, 8), 8.0)},
+                          strength=0.5),
+        ]
+        self._assert_equiv(active, "weighted_average", _layer_model())
+
+    def test_model_scale_applied_identically(self):
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 2),
+                                                   torch.randn(2, 8), 2.0)},
+                          strength=1.0),
+            _virtual_item({self.KEY: _lora_adapter(torch.randn(8, 3),
+                                                   torch.randn(3, 8), 3.0)},
+                          strength=0.7),
+        ]
+        self._assert_equiv(active, "weighted_sum", _layer_model(), scale=0.85)
+
+    def test_alpha_as_tensor(self):
+        # comfy sometimes stores alpha as a 0-d tensor
+        active = [
+            _virtual_item({self.KEY: _lora_adapter(
+                torch.randn(8, 2), torch.randn(2, 8), torch.tensor(2.0))},
+                strength=1.0),
+        ]
+        self._assert_equiv(active, "weighted_sum", _layer_model())
+
+    # ---- fallback: non-qualifying payloads keep the dense path -----------
+    def _lokr(self):
+        return lora_optimizer.LoKrAdapter(set(), (
+            torch.randn(8, 8), torch.randn(1, 1), 1.0,
+            None, None, None, None, None, None))
+
+    def test_virtual_payload_is_linear_ok_positive(self):
+        p = _lora_adapter(torch.randn(8, 2), torch.randn(2, 8), 2.0)
+        self.assertTrue(self.opt._virtual_payload_is_linear_ok(p))
+
+    def test_virtual_payload_is_linear_ok_rejects_non_adapters(self):
+        f = self.opt._virtual_payload_is_linear_ok
+        self.assertFalse(f(self._lokr()))
+        self.assertFalse(f(("diff", (torch.randn(8, 8),))))
+        self.assertFalse(f(torch.randn(8, 8)))
+        # mid != None (LoCon)
+        self.assertFalse(f(lora_optimizer.LoRAAdapter(
+            set(), (torch.randn(8, 2, 1, 1), torch.randn(2, 8),
+                    2.0, torch.randn(2, 2, 3, 3), None, None))))
+        # non-2D up
+        self.assertFalse(f(lora_optimizer.LoRAAdapter(
+            set(), (torch.randn(8, 2, 1, 1), torch.randn(2, 8, 1, 1),
+                    2.0, None, None, None))))
+
+    def test_group_ok_true_for_pure_file_group(self):
+        # No virtual contributor -> True (file path stays exactly as before)
+        file_item = {"name": "F", "strength": 1.0, "clip_strength": None,
+                     "lora": {}}
+        self.assertTrue(self.opt._virtual_group_is_linear_ok(
+            self._group(), [file_item], _layer_model(), None))
+
+    def test_group_ok_false_for_lokr_contributor(self):
+        active = [_virtual_item({self.KEY: self._lokr()})]
+        self.assertFalse(self.opt._virtual_group_is_linear_ok(
+            self._group(), active, _layer_model(), None))
+        # and _build_exact_linear_patch bails -> dense path
+        self.assertIsNone(self.opt._build_exact_linear_patch(
+            self._group(), active, 1, "weighted_sum"))
+
+    def test_group_ok_false_for_dense_tensor_contributor(self):
+        active = [_virtual_item({self.KEY: torch.randn(8, 8)})]
+        self.assertFalse(self.opt._virtual_group_is_linear_ok(
+            self._group(), active, _layer_model(), None))
+        self.assertIsNone(self.opt._build_exact_linear_patch(
+            self._group(), active, 1, "weighted_sum"))
+
+    def test_group_ok_false_for_tuple_target_key(self):
+        # offset-sliced (QKV refusion) target keys stay dense
+        tg = {"target_key": (self.KEY, (0, 0, 4)), "is_clip": False,
+              "aliases": [self.KEY], "label_prefix": self.KEY}
+        active = [_virtual_item(
+            {self.KEY: _lora_adapter(torch.randn(8, 2), torch.randn(2, 8), 2.0)})]
+        self.assertFalse(self.opt._virtual_group_is_linear_ok(
+            tg, active, _layer_model(), None))
+
+    def test_group_ok_false_when_target_not_2d(self):
+        # 4D conv target: dense path reshapes, fast path can't -> keep dense
+        model = types.SimpleNamespace(model=types.SimpleNamespace(
+            layer=types.SimpleNamespace(weight=torch.zeros(8, 8, 1, 1))))
+        active = [_virtual_item(
+            {self.KEY: _lora_adapter(torch.randn(8, 2), torch.randn(2, 8), 2.0)})]
+        self.assertFalse(self.opt._virtual_group_is_linear_ok(
+            self._group(), active, model, None))
+
+
 class TestChainOptionsNode(unittest.TestCase):
     """The side node carries the per-LoRA widgets and emits a
     LORA_CHAIN_OPTIONS payload the inline node consumes by chain order."""
@@ -1172,6 +1361,12 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
 
         # (c) the applied patch is the exact weighted combination
         self.assertEqual(set(applied["patches"]), {self.KEY})
+        # ...and it is a low-rank LoRAAdapter, proving the virtual-aware fast
+        # path actually engaged for this qualifying group (weighted_sum, 2D
+        # linear, plain adapters) rather than silently falling back to the
+        # dense ("diff", tensor) path.
+        self.assertIsInstance(applied["patches"][self.KEY],
+                              lora_optimizer.LoRAAdapter)
         got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
             applied["patches"][self.KEY])
         expected = up_a @ down_a + 0.7 * (up_b @ down_b)
