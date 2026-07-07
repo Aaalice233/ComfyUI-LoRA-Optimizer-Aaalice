@@ -859,9 +859,11 @@ Load Checkpoint ──► Load LoRA #1 ──► Load LoRA #2 ──► ... ─�
 
 ```
 [Inline Optimizer] Detected loader chain (slot -> LoRA mapping):
-  #1: 210 keys, rank 16, loader strength 0.80
-  #2: 176 keys, rank 32, loader strength 0.50, +48 clip keys @ 0.50
+  #1: my_style.safetensors — 210 keys, rank 16, loader strength 0.80
+  #2: my_char.safetensors — 176 keys, rank 32, loader strength 0.50, +48 clip keys @ 0.50
 ```
+
+When the chain is fed by **stock Load LoRA / Load LoRA (Model Only)** nodes or the **rgthree Power Lora Loader**, the inline node recovers the **real LoRA filenames** and shows them in the fingerprint (as above). Other loaders that don't tag their output fall back to a generic `chain lora #N` label.
 
 | Per-slot option | Effect |
 |---|---|
@@ -870,12 +872,13 @@ Load Checkpoint ──► Load LoRA #1 ──► Load LoRA #2 ──► ... ─�
 | `model_strength` / `clip_strength` (advanced) | Separate multipliers for the model and text-encoder branches |
 | `conflict_mode` / `key_filter` / `preserve` (advanced) | Same per-LoRA controls as **LoRA Stack (Dynamic)** |
 
-Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node is supported via the `settings` input in **both** advanced mode and **AutoTuner mode** — the AutoTuner's multi-candidate search, memory, and community cache all run on captured chains. Captured LoRAs have no file on disk, so their identity is derived from a hash of the captured weights.
+Non-LoRA patches on the incoming model — OFT/BOFT rotations, hooked entries, padded diffs, third-party patch shapes — **pass through untouched** and are counted in the report. A Settings node is supported via the `settings` input in **both** advanced mode and **AutoTuner mode** — the AutoTuner's multi-candidate search, memory, and community cache all run on captured chains.
 
 **What that means for memory and community caching inline:**
-- **Memory persists across sessions.** The content-based identity is stable across ComfyUI restarts, so a chain you tuned once is found again on the next run (unlike the per-session capture names, which change every restart).
-- **Community caching is a separate namespace from file-based LoRAs.** An inline-captured content hash is a hash of the *captured weights*, not the *file bytes* a file-based LoRA-Stack run hashes — so the two never collide. Inline chains share configs with **other inline chains** of the same content, but **not** with file-based LoRA-Stack recordings of the "same" LoRA (this is by design — you chose the inline path).
-- **Inline community sharing assumes the same ComfyUI version.** The captured factors and key names depend on comfy's key-mapping / QKV-fusion, so a hash is only comparable across machines running the same comfy build.
+- **Stock and rgthree loaders reconcile with the file-based dataset.** When a chain is fed by stock **Load LoRA** / **Load LoRA (Model Only)** or the **rgthree Power Lora Loader**, the inline node recovers each real filename and keys memory + community on the **file bytes** — the exact same identity a **LoRA Stack** run of that file uses. So a stack you tune inline shares its memory and community-cache entries with the Stack path, and vice-versa. Per-LoRA attribution is exact.
+- **Only genuinely unstamped loaders use the separate captured namespace.** A custom loader that doesn't tag its output leaves no filename, so those LoRAs fall back to a content hash of the *captured weights* (not the file bytes). Such chains share configs with **other inline chains** of the same captured content, but not with file-based recordings — this is the fallback, not the default for common loaders.
+- **Memory persists across sessions either way.** Both the file identity (stamped loaders) and the captured-content identity (unstamped) are stable across ComfyUI restarts, so a chain you tuned once is found again next run — unlike the per-session capture *names*, which change every restart.
+- **The captured-namespace fallback assumes the same ComfyUI version.** Its factors and key names depend on comfy's key-mapping / QKV-fusion, so a captured-content hash is only comparable across machines running the same comfy build. (File-identity reconciliation via stamped names is not affected — it hashes the file bytes.)
 
 **v1 limitations:**
 - **Fully-disjoint LoRAs at identical strengths** may be grouped or ordered ambiguously — the chain fingerprints reveal it when it happens.
