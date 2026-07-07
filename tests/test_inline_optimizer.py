@@ -1915,5 +1915,147 @@ class TestInlineMemoryCrossSession(unittest.TestCase):
                 self.assertEqual(len(out2), 5)
 
 
+class _AttachHost:
+    """Minimal object exposing the ModelPatcher attachment API."""
+    def __init__(self):
+        self._att = {}
+
+    def get_attachment(self, key):
+        return self._att.get(key, None)
+
+    def set_attachments(self, key, val):
+        self._att[key] = val
+
+
+class _ClipWrap:
+    """CLIP-like wrapper whose attachments live on its .patcher (real CLIP
+    objects don't expose get/set_attachments — only clip.patcher does)."""
+    def __init__(self):
+        self.patcher = _AttachHost()
+
+
+class TestLoraNameStampInstaller(unittest.TestCase):
+    """Commit 1: _install_lora_name_stamp wraps a LoraLoader-like class so
+    every load_lora call appends {name, strength_model, strength_clip} to the
+    'loraopt_chain_names' attachment on the returned model (and clip)."""
+
+    ATTACH = "loraopt_chain_names"
+
+    def _fresh_loader_cls(self):
+        class _L:
+            def load_lora(self, model, clip, lora_name,
+                          strength_model, strength_clip):
+                return (model, clip)
+        return _L
+
+    def test_default_target_never_raises(self):
+        # With/without comfy's top-level `nodes` importable, the no-arg call
+        # must degrade gracefully (never raise at package import).
+        try:
+            result = lora_optimizer._install_lora_name_stamp()
+        except Exception as e:  # pragma: no cover
+            self.fail(f"installer raised: {e}")
+        self.assertIn(result, (True, False))
+
+    def test_entries_accumulate_in_chain_order(self):
+        L = self._fresh_loader_cls()
+        self.assertTrue(lora_optimizer._install_lora_name_stamp(L))
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "styles/a.safetensors", 0.8, 0.7)
+        inst.load_lora(m, None, "chars/b.safetensors", 0.5, 0.5)
+        stamps = m.get_attachment(self.ATTACH)
+        self.assertEqual([s["name"] for s in stamps],
+                         ["styles/a.safetensors", "chars/b.safetensors"])
+        self.assertEqual(stamps[0]["strength_model"], 0.8)
+        self.assertEqual(stamps[0]["strength_clip"], 0.7)
+        self.assertEqual(stamps[1]["strength_model"], 0.5)
+
+    def test_builds_new_list_never_mutates_upstream(self):
+        # The accumulator MUST build a NEW list each call: ModelPatcher.clone
+        # copies the attachment list by REFERENCE, so appending in place would
+        # corrupt the upstream (pre-clone) model's chain.
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "a.safetensors", 1.0, 1.0)
+        first = m.get_attachment(self.ATTACH)
+        inst.load_lora(m, None, "b.safetensors", 1.0, 1.0)
+        second = m.get_attachment(self.ATTACH)
+        self.assertIsNot(first, second)      # brand-new list
+        self.assertEqual(len(first), 1)      # the earlier list is untouched
+        self.assertEqual(len(second), 2)
+
+    def test_double_install_is_idempotent(self):
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        lora_optimizer._install_lora_name_stamp(L)   # second call is a no-op
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "a.safetensors", 1.0, 1.0)
+        # Only one wrapper -> one entry per call (double-wrap would give two).
+        self.assertEqual(len(m.get_attachment(self.ATTACH)), 1)
+
+    def test_stamping_exception_is_swallowed(self):
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+
+        class _Bad:
+            def get_attachment(self, key):
+                return None
+
+            def set_attachments(self, key, val):
+                raise RuntimeError("boom")
+
+        bad = _Bad()
+        out = inst.load_lora(bad, None, "a.safetensors", 1.0, 1.0)
+        # Original result still returned; loading is never broken by stamping.
+        self.assertEqual(out, (bad, None))
+
+    def test_clip_none_handled(self):
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        out = inst.load_lora(m, None, "a.safetensors", 1.0, 0.0)
+        self.assertIsNone(out[1])
+        self.assertEqual(len(m.get_attachment(self.ATTACH)), 1)
+
+    def test_clip_stamped_via_patcher(self):
+        # clip_out is a CLIP wrapper -> stamp lands on clip.patcher, which is
+        # exactly where the read path (clip.patcher.get_attachment) looks.
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        c = _ClipWrap()
+        inst.load_lora(m, c, "a.safetensors", 0.8, 0.6)
+        cs = c.patcher.get_attachment(self.ATTACH)
+        self.assertEqual(cs[0]["name"], "a.safetensors")
+        self.assertEqual(cs[0]["strength_clip"], 0.6)
+
+    def test_falsy_lora_name_not_stamped(self):
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "", 1.0, 1.0)
+        self.assertIsNone(m.get_attachment(self.ATTACH))
+
+    def test_returns_original_result_object(self):
+        # The wrapper must return exactly what the original returned (same
+        # model/clip objects) so downstream nodes see the real patched models.
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        c = _ClipWrap()
+        out = inst.load_lora(m, c, "a.safetensors", 1.0, 1.0)
+        self.assertIs(out[0], m)
+        self.assertIs(out[1], c)
+
+
 if __name__ == "__main__":
     unittest.main()

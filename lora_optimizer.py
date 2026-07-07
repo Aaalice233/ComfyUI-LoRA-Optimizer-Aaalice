@@ -9498,6 +9498,95 @@ class LoRAInlineChainOptions:
         return ({"visibility": settings_visibility, "slots": slots},)
 
 
+# Attachment key under which stock/rgthree LoRA loaders stamp their real
+# filenames onto the model/clip (see _install_lora_name_stamp). The inline
+# node reads it back to recover real names + file identity.
+LORAOPT_CHAIN_NAMES_ATTACH = "loraopt_chain_names"
+
+
+def _loraopt_attachable(obj):
+    """Return the object that supports the ModelPatcher attachment API for
+    `obj`: the object itself (a ModelPatcher), or its ``.patcher`` (a CLIP
+    wrapper stores attachments on clip.patcher), or None if neither does.
+    Guarded with getattr so arbitrary wrapper objects never crash us."""
+    if obj is None:
+        return None
+    if callable(getattr(obj, "get_attachment", None)) and \
+            callable(getattr(obj, "set_attachments", None)):
+        return obj
+    inner = getattr(obj, "patcher", None)
+    if inner is not None and callable(getattr(inner, "get_attachment", None)) \
+            and callable(getattr(inner, "set_attachments", None)):
+        return inner
+    return None
+
+
+def _install_lora_name_stamp(target_cls=None):
+    """Idempotently wrap ``nodes.LoraLoader.load_lora`` so every stock/rgthree
+    LoRA load records its real filename + strengths on the model/clip it
+    returns, as an ordered ``loraopt_chain_names`` attachment list.
+
+    All three target loaders route through this ONE method:
+      * stock ``LoraLoader.load_lora`` — directly;
+      * stock ``LoraLoaderModelOnly.load_lora_model_only`` — via
+        ``self.load_lora(model, None, lora_name, strength_model, 0)``;
+      * rgthree ``RgthreePowerLoraLoader.load_loras`` — via
+        ``LoraLoader().load_lora(...)`` (its ``LoraLoader`` IS ``nodes.LoraLoader``).
+    So wrapping this single method covers all three, at call time, regardless
+    of custom-node load order.
+
+    ``target_cls`` lets tests pass a fake ``LoraLoader``-like class; production
+    resolves ``nodes.LoraLoader`` lazily. Returns True if wrapped (or already
+    wrapped), False if the target could not be resolved.
+
+    Fail-safe: any error inside the stamping path is swallowed and the original
+    ``load_lora`` result is returned unchanged — stamping must NEVER break
+    LoRA loading. The accumulator builds a NEW list every call because
+    ModelPatcher.clone copies the attachment list by reference (a shared list
+    object), so appending in place would corrupt the upstream model's chain.
+    """
+    if target_cls is None:
+        try:
+            import nodes as _comfy_nodes
+        except Exception:
+            return False
+        target_cls = getattr(_comfy_nodes, "LoraLoader", None)
+        if target_cls is None:
+            return False
+
+    orig = getattr(target_cls, "load_lora", None)
+    if orig is None:
+        return False
+    if getattr(orig, "_loraopt_stamped", False):
+        return True  # already wrapped — idempotent
+
+    def load_lora(self, model, clip, lora_name, strength_model, strength_clip):
+        result = orig(self, model, clip, lora_name, strength_model,
+                      strength_clip)
+        try:
+            if lora_name and isinstance(result, (tuple, list)) and result:
+                model_out = result[0]
+                clip_out = result[1] if len(result) > 1 else None
+                entry = {"name": lora_name,
+                         "strength_model": float(strength_model),
+                         "strength_clip": float(strength_clip)}
+                for obj in (model_out, clip_out):
+                    tgt = _loraopt_attachable(obj)
+                    if tgt is None:
+                        continue
+                    prev = tgt.get_attachment(LORAOPT_CHAIN_NAMES_ATTACH) or []
+                    # NEW list — never append in place (see docstring).
+                    tgt.set_attachments(LORAOPT_CHAIN_NAMES_ATTACH,
+                                        list(prev) + [entry])
+        except Exception:
+            return result
+        return result
+
+    load_lora._loraopt_stamped = True
+    target_cls.load_lora = load_lora
+    return True
+
+
 class LoRAOptimizerInline(LoRAOptimizer):
     """
     Inline chain filter: merges the LoRA patches that upstream regular
