@@ -9521,6 +9521,20 @@ def _loraopt_attachable(obj):
     return None
 
 
+def _loraopt_already_stamped(fn):
+    """True if `fn` — or anything in its ``__wrapped__`` chain — is our stamp
+    wrapper. Walking the chain (not just the immediate function) stops a
+    double-wrap when a third party wraps our wrapper and we later re-import
+    (e.g. ComfyUI-HotReloadHack), which would otherwise double-stamp."""
+    seen = set()
+    while fn is not None and id(fn) not in seen:
+        if getattr(fn, "_loraopt_stamped", False):
+            return True
+        seen.add(id(fn))
+        fn = getattr(fn, "__wrapped__", None)
+    return False
+
+
 def _install_lora_name_stamp(target_cls=None):
     """Idempotently wrap ``nodes.LoraLoader.load_lora`` so every stock/rgthree
     LoRA load records its real filename + strengths on the model/clip it
@@ -9557,27 +9571,47 @@ def _install_lora_name_stamp(target_cls=None):
     orig = getattr(target_cls, "load_lora", None)
     if orig is None:
         return False
-    if getattr(orig, "_loraopt_stamped", False):
-        return True  # already wrapped — idempotent
+    if _loraopt_already_stamped(orig):
+        return True  # already wrapped (possibly behind a third-party wrap)
 
-    def load_lora(self, model, clip, lora_name, strength_model, strength_clip):
-        result = orig(self, model, clip, lora_name, strength_model,
-                      strength_clip)
+    @functools.wraps(orig)
+    def load_lora(self, *args, **kwargs):
+        # Call the original FIRST, passing args through verbatim — a future
+        # comfy that adds/reorders a load_lora param must never break loading.
+        result = orig(self, *args, **kwargs)
         try:
-            if lora_name and isinstance(result, (tuple, list)) and result:
-                model_out = result[0]
-                clip_out = result[1] if len(result) > 1 else None
-                entry = {"name": lora_name,
-                         "strength_model": float(strength_model),
-                         "strength_clip": float(strength_clip)}
-                for obj in (model_out, clip_out):
-                    tgt = _loraopt_attachable(obj)
-                    if tgt is None:
-                        continue
-                    prev = tgt.get_attachment(LORAOPT_CHAIN_NAMES_ATTACH) or []
-                    # NEW list — never append in place (see docstring).
-                    tgt.set_attachments(LORAOPT_CHAIN_NAMES_ATTACH,
-                                        list(prev) + [entry])
+            if not (isinstance(result, (tuple, list)) and result):
+                return result
+            # Extract defensively (positional index with kwargs fallback):
+            # rgthree/ModelOnly call positionally, ComfyUI calls by keyword.
+            # If we can't extract, skip stamping — never touch loading.
+            try:
+                lora_name = (kwargs["lora_name"] if "lora_name" in kwargs
+                             else args[2])
+                sm = (kwargs["strength_model"] if "strength_model" in kwargs
+                      else args[3])
+                sc = (kwargs["strength_clip"] if "strength_clip" in kwargs
+                      else args[4])
+            except (IndexError, KeyError):
+                return result
+            # Mirror stock LoraLoader's early-return: a 0/0 load returns the
+            # INPUT (model, clip) UNCHANGED (no clone), so stamping would both
+            # mutate a shared upstream model AND add a phantom stamp with no
+            # capturable group (shifting stamp<->group alignment).
+            if not lora_name or (sm == 0 and sc == 0):
+                return result
+            entry = {"name": lora_name,
+                     "strength_model": float(sm),
+                     "strength_clip": float(sc)}
+            clip_out = result[1] if len(result) > 1 else None
+            for obj in (result[0], clip_out):
+                tgt = _loraopt_attachable(obj)
+                if tgt is None:
+                    continue
+                prev = tgt.get_attachment(LORAOPT_CHAIN_NAMES_ATTACH) or []
+                # NEW list — never append in place (see docstring).
+                tgt.set_attachments(LORAOPT_CHAIN_NAMES_ATTACH,
+                                    list(prev) + [entry])
         except Exception:
             return result
         return result

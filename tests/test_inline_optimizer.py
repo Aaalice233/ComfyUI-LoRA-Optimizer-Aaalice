@@ -2302,5 +2302,127 @@ class TestInlineNamedReconciliation(unittest.TestCase):
         self.assertTrue(key.startswith("captured:"))
 
 
+class TestLoraNameStampHardening(unittest.TestCase):
+    """Review hardening: 0/0 early-return guard, signature-agnostic wrapper,
+    functools.wraps + __wrapped__-chain idempotency."""
+
+    ATTACH = "loraopt_chain_names"
+
+    def _fresh_loader_cls(self):
+        class _L:
+            def load_lora(self, model, clip, lora_name,
+                          strength_model, strength_clip):
+                return (model, clip)
+        return _L
+
+    # --- Important 1: strength 0/0 loads must NOT stamp / mutate input ---
+
+    def test_zero_zero_load_adds_no_stamp(self):
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "a.safetensors", 0.0, 0.0)
+        self.assertIsNone(m.get_attachment(self.ATTACH))   # no phantom stamp
+
+    def test_zero_zero_load_does_not_mutate_input_attachment(self):
+        # Stock LoraLoader early-returns the INPUT (model, clip) UNCHANGED on a
+        # 0/0 load (no clone) -> stamping would mutate a shared upstream model.
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        existing = [{"name": "up.safetensors", "strength_model": 1.0,
+                     "strength_clip": 1.0}]
+        m.set_attachments(self.ATTACH, existing)
+        inst.load_lora(m, None, "a.safetensors", 0.0, 0.0)
+        after = m.get_attachment(self.ATTACH)
+        self.assertIs(after, existing)     # exact same object, untouched
+        self.assertEqual(len(after), 1)    # nothing appended
+
+    def test_nonzero_model_only_load_still_stamps(self):
+        # LoraLoaderModelOnly -> strength_clip=0 but strength_model!=0: NOT a
+        # 0/0 load, so it must still stamp.
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "a.safetensors", 0.8, 0.0)
+        self.assertEqual(len(m.get_attachment(self.ATTACH)), 1)
+
+    # --- Important 3: signature-agnostic wrapper ---
+
+    def test_stamps_when_called_with_keyword_args(self):
+        # ComfyUI invokes node FUNCTION with keyword args from the inputs dict.
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(model=m, clip=None, lora_name="a.safetensors",
+                       strength_model=0.8, strength_clip=0.6)
+        s = m.get_attachment(self.ATTACH)
+        self.assertEqual(s[0]["name"], "a.safetensors")
+        self.assertEqual(s[0]["strength_model"], 0.8)
+        self.assertEqual(s[0]["strength_clip"], 0.6)
+
+    def test_unknown_trailing_arg_does_not_break_loading_or_stamping(self):
+        # A future comfy adds a trailing param. The wrapper must pass it
+        # through (loading unbroken) AND still stamp from the leading args.
+        class _Future:
+            def load_lora(self, model, clip, lora_name, sm, sc, extra=None):
+                return (model, clip)
+        lora_optimizer._install_lora_name_stamp(_Future)
+        inst = _Future()
+        m = _AttachHost()
+        out = inst.load_lora(m, None, "a.safetensors", 0.8, 0.6, "new_param")
+        self.assertEqual(out, (m, None))                    # loading unbroken
+        self.assertEqual(m.get_attachment(self.ATTACH)[0]["name"],
+                         "a.safetensors")
+
+    def test_extraction_failure_skips_stamp_but_not_load(self):
+        # An exotic signature we can't extract from must never break loading.
+        class _Sig:
+            def load_lora(self, model, clip, lora_name):
+                return (model, clip)
+        lora_optimizer._install_lora_name_stamp(_Sig)
+        inst = _Sig()
+        m = _AttachHost()
+        out = inst.load_lora(m, None, "a.safetensors")
+        self.assertEqual(out, (m, None))                    # no crash
+        self.assertIsNone(m.get_attachment(self.ATTACH))    # stamp skipped
+
+    # --- Minors: functools.wraps + __wrapped__-chain idempotency ---
+
+    def test_wrapper_preserves_metadata_via_functools_wraps(self):
+        class _Named:
+            def load_lora(self, model, clip, lora_name, sm, sc):
+                "orig docstring"
+                return (model, clip)
+        orig = _Named.load_lora
+        lora_optimizer._install_lora_name_stamp(_Named)
+        self.assertEqual(_Named.load_lora.__name__, "load_lora")
+        self.assertEqual(_Named.load_lora.__doc__, "orig docstring")
+        self.assertIs(_Named.load_lora.__wrapped__, orig)
+
+    def test_no_double_stamp_when_reinstalled_over_third_party_wrap(self):
+        L = self._fresh_loader_cls()
+        lora_optimizer._install_lora_name_stamp(L)
+        ours = L.load_lora
+
+        def third_party(self, *a, **k):
+            return ours(self, *a, **k)
+        third_party.__wrapped__ = ours        # chain set, no _loraopt_stamped
+        L.load_lora = third_party
+        self.assertFalse(getattr(third_party, "_loraopt_stamped", False))
+        # Re-install (e.g. HotReload re-import) must find us in the chain and
+        # refuse to re-wrap.
+        self.assertTrue(lora_optimizer._install_lora_name_stamp(L))
+        self.assertIs(L.load_lora, third_party)
+        inst = L()
+        m = _AttachHost()
+        inst.load_lora(m, None, "a.safetensors", 1.0, 1.0)
+        self.assertEqual(len(m.get_attachment(self.ATTACH)), 1)   # single stamp
+
+
 if __name__ == "__main__":
     unittest.main()
