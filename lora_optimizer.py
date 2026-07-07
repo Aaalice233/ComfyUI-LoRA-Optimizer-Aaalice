@@ -2577,7 +2577,18 @@ class _LoRAMergeBase:
                     if isinstance(raw, torch.Tensor):
                         diff = raw.float()
                     else:
-                        diff = self._expand_patch_to_diff(raw)
+                        # Move the small low-rank factors to the compute device
+                        # BEFORE the up@down expand, so the matmul runs on-device
+                        # and only the factors cross the bus — not the big dense
+                        # [out x in] result (the previous code expanded on the
+                        # factors' native CPU device, then shipped the dense diff
+                        # over). Mirrors _compute_lora_diff's factor-first move.
+                        # A ("diff", (tensor,)) payload is already dense — moving
+                        # it before/after is equivalent; _move_patch_to_device
+                        # handles that shape too.
+                        expand_src = (self._move_patch_to_device(raw, device)
+                                      if use_gpu and device is not None else raw)
+                        diff = self._expand_patch_to_diff(expand_src)
                     if device is not None and diff.device != device:
                         diff = diff.to(device)
                     try:

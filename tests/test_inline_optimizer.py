@@ -39,6 +39,32 @@ def _entry(strength, payload, strength_model=1.0, offset=None, function=None):
     return (strength, payload, strength_model, offset, function)
 
 
+def _lora_adapter(up, down, alpha):
+    """A comfy LoRAAdapter payload with explicit up/down/alpha (mid=None)."""
+    return lora_optimizer.LoRAAdapter(
+        loaded_keys=set(), weights=(up, down, alpha, None, None, None))
+
+
+def _virtual_item(payloads, strength=1.0, clip_strength=None, name="v",
+                  conflict_mode="all", key_filter="all", preserve=False):
+    """A captured/virtual active_loras item: its lora dict maps MODEL TARGET
+    KEYS -> adapter payloads (not trainer-format lora_up/down keys)."""
+    return {
+        "name": name, "lora": dict(payloads), "_precomputed_diffs": True,
+        "strength": strength, "clip_strength": clip_strength,
+        "conflict_mode": conflict_mode, "key_filter": key_filter,
+        "preserve": preserve, "metadata": {},
+    }
+
+
+def _layer_model(out=8, in_=8, key_attr="layer"):
+    """Model whose model.<key_attr>.weight has the given shape, so
+    _resolve_target_shape('<key_attr>.weight') resolves."""
+    return types.SimpleNamespace(
+        model=types.SimpleNamespace(**{
+            key_attr: types.SimpleNamespace(weight=torch.zeros(out, in_))}))
+
+
 class TestPatchClassification(unittest.TestCase):
     def test_adapter_is_capturable(self):
         e = _entry(0.8, _adapter())
@@ -878,6 +904,90 @@ class TestSingleLoraVirtualPath(unittest.TestCase):
             node.optimize_merge(model, stack, 1.0)
         self.assertEqual(len(calls), 1)
         self.assertTrue(calls[0]["matched"])
+
+
+class TestVirtualDiffDeviceExpansion(unittest.TestCase):
+    """Commit B: captured (virtual) diffs are expanded on the COMPUTE device.
+    The small low-rank factors move to the device BEFORE the up@down matmul, so
+    the matmul runs on-device and only the factors cross the bus — not the big
+    dense [out x in] result from a CPU matmul. Pure device move: the merged
+    result is unchanged (allclose vs the plain CPU expand)."""
+
+    KEY = "layer.weight"
+
+    def _group(self):
+        return {"target_key": self.KEY, "is_clip": False,
+                "aliases": [self.KEY], "label_prefix": self.KEY}
+
+    def test_cpu_result_matches_direct_expand(self):
+        # Output invariance on CPU: prepared diff == plain up@down expand.
+        up = torch.randn(8, 2)
+        down = torch.randn(2, 8)
+        item = _virtual_item({self.KEY: _lora_adapter(up, down, 2.0)})  # scale 1
+        opt = lora_optimizer.LoRAOptimizer()
+        prepared = opt._prepare_group_diffs(
+            self._group(), [item], _layer_model(), None,
+            torch.device("cpu"), auto_scale=1.0)
+        self.assertTrue(torch.allclose(prepared["diffs"][0], up @ down, atol=1e-6))
+
+    def test_expand_runs_on_compute_device_not_cpu(self):
+        # Teeth without a GPU: 'meta' is a real non-cpu device carrying no data,
+        # so the up@down matmul's INPUT device is observable. Factor-first move
+        # (commit B) => the mm runs on 'meta'. The old code expanded on the CPU
+        # factors then shipped the dense result, so its mm ran on 'cpu'.
+        up = torch.randn(8, 2)
+        down = torch.randn(2, 8)
+        item = _virtual_item({self.KEY: _lora_adapter(up, down, 2.0)})
+        opt = lora_optimizer.LoRAOptimizer()
+        mm_devices = []
+        orig_mm = torch.mm
+
+        def spy_mm(a, b, *args, **kwargs):
+            mm_devices.append(a.device.type)
+            return orig_mm(a, b, *args, **kwargs)
+
+        with mock.patch("torch.mm", spy_mm):
+            opt._prepare_group_diffs(
+                self._group(), [item], _layer_model(), None,
+                torch.device("meta"), auto_scale=1.0)
+        self.assertIn("meta", mm_devices)     # matmul ran on the compute device
+        self.assertNotIn("cpu", mm_devices)   # not a CPU matmul + dense transfer
+
+    def test_cpu_device_never_moves_factors(self):
+        # Guard: for a CPU compute device there is no bus to cross, so the
+        # factor-move helper must NOT be invoked (use_gpu is False). Still works.
+        up = torch.randn(8, 2)
+        down = torch.randn(2, 8)
+        item = _virtual_item({self.KEY: _lora_adapter(up, down, 2.0)})
+        opt = lora_optimizer.LoRAOptimizer()
+        moves = []
+        orig_move = lora_optimizer._LoRAMergeBase._move_patch_to_device
+
+        def spy_move(patch, device):
+            moves.append(device)
+            return orig_move(patch, device)
+
+        with mock.patch.object(lora_optimizer._LoRAMergeBase,
+                               "_move_patch_to_device",
+                               staticmethod(spy_move)):
+            prepared = opt._prepare_group_diffs(
+                self._group(), [item], _layer_model(), None,
+                torch.device("cpu"), auto_scale=1.0)
+        self.assertEqual(moves, [])
+        self.assertTrue(torch.allclose(prepared["diffs"][0], up @ down, atol=1e-6))
+
+    @unittest.skipUnless(torch.cuda.is_available(), "needs CUDA")
+    def test_gpu_expand_on_device_matches_cpu(self):
+        up = torch.randn(8, 2)
+        down = torch.randn(2, 8)
+        item = _virtual_item({self.KEY: _lora_adapter(up, down, 2.0)})
+        opt = lora_optimizer.LoRAOptimizer()
+        prepared = opt._prepare_group_diffs(
+            self._group(), [item], _layer_model(), None,
+            torch.device("cuda"), auto_scale=1.0)
+        got = prepared["diffs"][0]
+        self.assertEqual(got.device.type, "cuda")
+        self.assertTrue(torch.allclose(got.cpu(), up @ down, atol=1e-5))
 
 
 class TestChainOptionsNode(unittest.TestCase):
