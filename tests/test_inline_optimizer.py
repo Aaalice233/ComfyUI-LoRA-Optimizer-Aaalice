@@ -1172,5 +1172,128 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
         self.assertEqual(len(model.patches[self.KEY]), 2)
 
 
+# Model-space target keys the loader chain leaves on the ModelPatcher. These
+# still carry structural architecture markers even though they are NOT
+# trainer-format LoRA keys, so _detect_architecture's structural heuristics
+# resolve them.
+_LTX_KEY = "diffusion_model.transformer_blocks.0.attn1.to_q.weight"
+_ZIMAGE_KEY = "diffusion_model.layers.0.attention.to_q.weight"
+# SDXL UNet cross-attention: has transformer_blocks + attn1 (which naively
+# looks like LTX) but lives under input_blocks -> the LTX branch's UNet-block
+# exclusion must keep it out of 'ltx' and land it on sd15 -> sd_unet.
+_SDXL_UNET_KEY = ("diffusion_model.input_blocks.4.1.transformer_blocks.0"
+                  ".attn1.to_q.weight")
+
+
+class TestVirtualArchDetection(unittest.TestCase):
+    """_normalize_stack must fall back to detecting architecture from the
+    MODEL-SPACE keys of virtual (_precomputed_diffs) items when no file-based
+    item resolves. Inline-captured chains are 100% virtual, so without this
+    fallback every inline merge resolved to sd_unet (wrong for DiT models)."""
+
+    def _virtual_stack(self, model_key):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {model_key: _adapter()})))
+        return lora_optimizer.LoRAOptimizerInline._chain_groups_to_stack(
+            mg, [], [_slot()], "simple")
+
+    def test_ltx_model_keys_detect_ltx(self):
+        node = lora_optimizer.LoRAOptimizerInline()
+        stack = self._virtual_stack(_LTX_KEY)
+        self.assertTrue(all(i["_precomputed_diffs"] for i in stack))
+        node._normalize_stack(stack)
+        self.assertEqual(node._detected_arch, "ltx")
+
+    def test_zimage_model_keys_detect_zimage(self):
+        node = lora_optimizer.LoRAOptimizerInline()
+        stack = self._virtual_stack(_ZIMAGE_KEY)
+        node._normalize_stack(stack)
+        self.assertEqual(node._detected_arch, "zimage")
+
+    def test_tuple_keys_do_not_crash_and_still_detect(self):
+        # Fused-QKV captures key the virtual dict by (str_key, offset) TUPLES.
+        # _detect_architecture indexes k.lower()/'in k', which would crash on a
+        # tuple -> the fallback must stringify the key view first.
+        off = (0, 0, 4)
+        patches = {_LTX_KEY: [_entry(0.7, _adapter(), offset=off)]}
+        groups = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(patches)
+        self.assertEqual(list(groups[0]["entries"]), [(_LTX_KEY, off)])
+        stack = lora_optimizer.LoRAOptimizerInline._chain_groups_to_stack(
+            groups, [], [_slot()], "simple")
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack(stack)     # must not raise on the tuple key
+        self.assertEqual(node._detected_arch, "ltx")
+        # the real lora dict is untouched — its key is still the TUPLE
+        self.assertIn((_LTX_KEY, off), stack[0]["lora"])
+
+    def test_file_item_detection_not_overridden_by_virtual_fallback(self):
+        # Regression guard: a file-based item with recognizable trainer keys
+        # resolves first (break), so the virtual LTX item never reaches the
+        # fallback. Proves the fallback fires ONLY when file detection fails.
+        file_item = {
+            "name": "sdxl_style.safetensors",
+            "lora": {"lora_te1_text_model_encoder_layers_0_self_attn_q_proj"
+                     ".lora_up.weight": torch.zeros(4, 4)},
+            "strength": 1.0,
+        }
+        virtual = self._virtual_stack(_LTX_KEY)[0]
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack([file_item, virtual])
+        self.assertEqual(node._detected_arch, "sdxl")   # file wins, not 'ltx'
+
+    def test_sdxl_unet_virtual_keys_resolve_to_sd_unet_not_ltx(self):
+        # No false LTX match: SDXL UNet cross-attn keys carry transformer_blocks
+        # + attn1 but under input_blocks -> sd15 -> sd_unet preset.
+        node = lora_optimizer.LoRAOptimizerInline()
+        stack = self._virtual_stack(_SDXL_UNET_KEY)
+        node._normalize_stack(stack)
+        self.assertEqual(node._detected_arch, "sd15")
+        self.assertNotEqual(node._detected_arch, "ltx")
+        key, _ = lora_optimizer._resolve_arch_preset("auto", node._detected_arch)
+        self.assertEqual(key, "sd_unet")
+
+    def test_resolve_arch_preset_ltx_and_zimage_map_to_dit(self):
+        # Prove the preset now resolves correctly once detection works.
+        self.assertEqual(lora_optimizer._resolve_arch_preset("auto", "ltx")[0],
+                         "dit")
+        self.assertEqual(
+            lora_optimizer._resolve_arch_preset("auto", "zimage")[0], "dit")
+
+
+class TestInlineFingerprintArch(unittest.TestCase):
+    """execute_inline must detect the architecture from the captured
+    model-space keys and surface it in the fingerprint, instead of always
+    warning 'architecture: unknown (inline capture)'."""
+
+    def _model(self, patches):
+        m = _FakePatcher(patches)
+        m.model = types.SimpleNamespace()
+        return m
+
+    @staticmethod
+    def _out(result):
+        return result["result"] if isinstance(result, dict) else result
+
+    def test_ltx_chain_reports_detected_arch(self):
+        model = self._model(_chain_patches((0.8, {_LTX_KEY: _adapter()})))
+        node = lora_optimizer.LoRAOptimizerInline()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "engine report",
+                                                     None, None)
+        report = self._out(node.execute_inline(model, output_strength=1.0))[2]
+        self.assertIn("architecture: ltx", report)
+        self.assertIn("detected from captured keys", report)
+        self.assertNotIn("architecture: unknown (inline capture)", report)
+
+    def test_unknown_chain_still_warns(self):
+        # Regression net: an unrecognizable key with no pinned preset still
+        # emits the "set a preset" guidance.
+        model = self._model(_chain_patches((0.8, {"a": _adapter()})))
+        node = lora_optimizer.LoRAOptimizerInline()
+        node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
+        report = self._out(node.execute_inline(model, output_strength=1.0))[2]
+        self.assertIn("architecture: unknown (inline capture)", report)
+        self.assertIn("architecture_preset", report)
+
+
 if __name__ == "__main__":
     unittest.main()

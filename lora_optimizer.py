@@ -4460,6 +4460,16 @@ class _LoRAMergeBase:
 
         return None
 
+    @staticmethod
+    def _stringify_lora_keys(lora_dict):
+        """Return a string-keyed VIEW of a state dict for architecture
+        detection. Captured (virtual) items may key by TUPLES (str_key,
+        offset) from fused-QKV splits, and _detect_architecture indexes
+        k.lower() / 'substr in k', which crash/misbehave on tuple keys. The
+        values are shared (no copy) and the original dict is never mutated."""
+        return {(k[0] if isinstance(k, tuple) else k): v
+                for k, v in lora_dict.items()}
+
     def _normalize_stack(self, lora_stack, normalize_keys="disabled"):
         """
         Normalize a LoRA stack into a consistent list of dicts.
@@ -4553,6 +4563,8 @@ class _LoRAMergeBase:
         # Always detect architecture (used for preset selection even without key normalization)
         if len(normalized) > 0:
             arch = "unknown"
+            # File-based items carry trainer-format LoRA keys the detector /
+            # normalizer understands — try them first, exactly as before.
             for item in normalized:
                 if item.get("_precomputed_diffs"):
                     continue  # virtual LoRAs have model-space keys, not LoRA keys
@@ -4560,6 +4572,25 @@ class _LoRAMergeBase:
                 if detected != "unknown":
                     arch = detected
                     break
+            # Fallback for all-virtual (inline-captured) or mixed stacks whose
+            # file items didn't resolve: virtual items are keyed by MODEL-SPACE
+            # target keys, which STILL carry structural architecture markers
+            # (diffusion_model.transformer_blocks... for LTX,
+            # diffusion_model.layers.N.attention... for Z-Image, etc.).
+            # _detect_architecture's structural heuristics work on those. Keys
+            # may be TUPLES (str_key, offset) from fused-QKV captures, so detect
+            # on a stringified VIEW (never mutate the real lora dict). This only
+            # fires when file detection failed — a strict improvement over the
+            # old unknown->sd_unet fallthrough for inline chains.
+            if arch == "unknown":
+                for item in normalized:
+                    if not item.get("_precomputed_diffs"):
+                        continue
+                    detected = self._detect_architecture(
+                        self._stringify_lora_keys(item["lora"]))
+                    if detected != "unknown":
+                        arch = detected
+                        break
             self._detected_arch = arch if arch != "unknown" else None
 
             # Architecture-aware key normalization (only when enabled)
@@ -9704,11 +9735,27 @@ class LoRAOptimizerInline(LoRAOptimizer):
         # so no mismatch fires (merge-all-defaults is not a mismatch).
         fp_lora_count = (len(slots) if chain_options is not None
                          else max(len(model_groups), len(clip_groups)))
+        # Detect architecture from the captured MODEL-SPACE keys for DISPLAY
+        # consistency. _normalize_stack's virtual fallback runs the SAME
+        # function on the SAME keys and is the source of truth for the actual
+        # preset — this just mirrors it in the fingerprint so the log names the
+        # real arch (e.g. LTX -> 'ltx' -> dit preset) instead of "unknown".
+        # Union of model + clip entry keys; tuple (fused-QKV) keys stringified.
+        combined_keys = {}
+        for g in model_groups:
+            combined_keys.update(g["entries"])
+        for g in clip_groups:
+            combined_keys.update(g["entries"])
+        detected_arch = self._detect_architecture(
+            self._stringify_lora_keys(combined_keys))
+        arch_display = detected_arch if detected_arch != "unknown" else None
+        # Warn only when detection genuinely fails AND no preset is pinned via a
+        # Settings node (an explicit preset resolves regardless of detection).
+        preset_pinned = merge_kwargs.get("architecture_preset", "auto") != "auto"
         fingerprint = self._chain_fingerprint(
             model_groups, clip_groups, fp_lora_count, passthrough,
-            # Virtual items skip _normalize_stack's arch detection, so "auto"
-            # can never resolve inline — warn unless a preset is pinned.
-            arch_unknown=merge_kwargs.get("architecture_preset", "auto") == "auto")
+            arch_unknown=(arch_display is None and not preset_pinned),
+            arch_display=arch_display)
         if autotuner_fallback:
             fingerprint += ("[Inline Optimizer] AutoTuner settings are not "
                             "supported inline — using optimizer defaults.\n\n")
@@ -9735,7 +9782,8 @@ class LoRAOptimizerInline(LoRAOptimizer):
             return None
 
     def _chain_fingerprint(self, model_groups, clip_groups, lora_count,
-                           passthrough_count=0, arch_unknown=False):
+                           passthrough_count=0, arch_unknown=False,
+                           arch_display=None):
         """Human-readable slot → LoRA attribution header, prepended to the
         engine report so the user can verify chain-order attribution."""
         lines = ["[Inline Optimizer] Detected loader chain (slot -> LoRA mapping):"]
@@ -9767,7 +9815,10 @@ class LoRAOptimizerInline(LoRAOptimizer):
         if passthrough_count > 0:
             lines.append(f"  note: {passthrough_count} non-LoRA patch entries "
                          f"passed through untouched (left on the model/clip).")
-        if arch_unknown:
+        if arch_display:
+            lines.append(f"  architecture: {arch_display} (detected from "
+                         f"captured keys)")
+        elif arch_unknown:
             lines.append("  architecture: unknown (inline capture) — set "
                          "architecture_preset via a Settings node for "
                          "arch-tuned thresholds.")
