@@ -9712,24 +9712,56 @@ class LoRAOptimizerInline(LoRAOptimizer):
 
     @staticmethod
     def _resolve_stamp_names(groups, stamps, strength_field, tol=1e-4):
-        """Align stamped filenames to reconstructed chain groups by ORDER and
-        STRENGTH. Positional (both are chain-ordered), verified against the
-        stamp's ``strength_field`` (``strength_model`` for the model branch,
-        ``strength_clip`` for the clip branch). Returns a list the length of
-        `groups`, each entry the resolved filename or None (ambiguous / no
-        matching stamp -> unnamed, best-effort degrade)."""
+        """Conservatively map stamped filenames to reconstructed chain groups
+        by UNIQUE strength — ORDER-INDEPENDENT. Verified against the stamp's
+        ``strength_field`` (``strength_model`` for the model branch,
+        ``strength_clip`` for the clip branch).
+
+        A group g is named ONLY when the match is unambiguous:
+          (i)  g's strength is unique among all groups (within tol), AND
+          (ii) exactly ONE stamp has strength within tol of g, AND
+          (iii) that stamp's strength is unique among all stamps (within tol).
+        Any collision/ambiguity leaves g unnamed (-> ``chain lora #N`` +
+        captured identity). A WRONG ``_resolved_file_name`` would drive the
+        persistent key and write one file's stats under another file's key,
+        polluting the shared file-based dataset — so we refuse to guess.
+        Positional index is NOT used, so same-strength groups that reconstruct
+        in any order are handled identically. The uniqueness-within-tol test
+        also closes the 0.8/0.80001 near-collision false-positive window.
+
+        Returns a list the length of `groups`, each entry a filename or None.
+        """
         names = [None] * len(groups)
-        for i, g in enumerate(groups):
-            if i >= len(stamps):
-                break
-            entry = stamps[i]
+        if not stamps:
+            return names
+        # Parse well-formed stamps once (name + branch strength); drop the rest.
+        parsed = []
+        for entry in stamps:
             try:
                 nm = entry.get("name")
                 s = float(entry.get(strength_field))
             except (AttributeError, TypeError, ValueError):
                 continue
-            if nm and abs(float(g["strength"]) - s) <= tol:
-                names[i] = nm
+            if nm:
+                parsed.append((nm, s))
+        if not parsed:
+            return names
+        group_strengths = [float(g["strength"]) for g in groups]
+        stamp_strengths = [s for (_nm, s) in parsed]
+
+        def _count_within(values, target):
+            return sum(1 for v in values if abs(v - target) <= tol)
+
+        for i, gs in enumerate(group_strengths):
+            if _count_within(group_strengths, gs) != 1:      # (i)
+                continue
+            matches = [(nm, s) for (nm, s) in parsed if abs(s - gs) <= tol]
+            if len(matches) != 1:                            # (ii)
+                continue
+            nm, matched_s = matches[0]
+            if _count_within(stamp_strengths, matched_s) != 1:  # (iii)
+                continue
+            names[i] = nm
         return names
 
     @staticmethod

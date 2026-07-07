@@ -2302,6 +2302,104 @@ class TestInlineNamedReconciliation(unittest.TestCase):
         self.assertTrue(key.startswith("captured:"))
 
 
+class TestInlineConservativeMatching(unittest.TestCase):
+    """Important 2: _resolve_stamp_names must be conservative + order-
+    independent. A wrong _resolved_file_name pollutes the shared file-based
+    dataset, so name a group ONLY on an unambiguous unique-strength match."""
+
+    @staticmethod
+    def _m(groups, stamps, field):
+        return lora_optimizer.LoRAOptimizerInline._resolve_stamp_names(
+            groups, stamps, field)
+
+    @staticmethod
+    def _g(*strengths):
+        return [{"strength": s, "entries": {}} for s in strengths]
+
+    @staticmethod
+    def _s(*pairs):
+        return [{"name": n, "strength_model": sm, "strength_clip": sm}
+                for (n, sm) in pairs]
+
+    def test_same_strength_groups_both_unnamed(self):
+        # Two groups at the SAME strength -> ambiguous -> BOTH unnamed
+        # (better anonymous than a wrong file identity).
+        names = self._m(self._g(0.8, 0.8),
+                        self._s(("a", 0.8), ("b", 0.8)), "strength_model")
+        self.assertEqual(names, [None, None])
+
+    def test_distinct_strengths_reversed_order_named_correctly(self):
+        # Reconstruction reversed the group order vs the stamp order: unique
+        # strengths must still map correctly by VALUE, not index.
+        names = self._m(self._g(0.5, 0.8),
+                        self._s(("a", 0.8), ("b", 0.5)), "strength_model")
+        self.assertEqual(names, ["b", "a"])
+
+    def test_count_mismatch_unique_named_colliding_unnamed(self):
+        # An unstamped loader adds a 3rd group at 0.5: the unique 0.8 group is
+        # named; the two colliding 0.5 groups stay unnamed.
+        names = self._m(self._g(0.8, 0.5, 0.5),
+                        self._s(("a", 0.8), ("b", 0.5)), "strength_model")
+        self.assertEqual(names, ["a", None, None])
+
+    def test_duplicate_stamp_strength_leaves_group_unnamed(self):
+        # Two stamps share a strength -> the matching group can't be resolved.
+        names = self._m(self._g(0.5),
+                        self._s(("a", 0.5), ("b", 0.5)), "strength_model")
+        self.assertEqual(names, [None])
+
+    def test_near_equal_strengths_within_tol_treated_as_collision(self):
+        # 0.8 vs 0.80005 are within tol -> fuzzy-unique fails -> both unnamed
+        # (closes the 0.8/0.80001 false-positive window).
+        names = self._m(self._g(0.8, 0.80005),
+                        self._s(("a", 0.8), ("b", 0.80005)), "strength_model")
+        self.assertEqual(names, [None, None])
+
+    def test_wrong_name_never_assigned_in_ambiguous_case(self):
+        names = self._m(self._g(0.8, 0.8),
+                        self._s(("a", 0.8), ("b", 0.8)), "strength_model")
+        self.assertNotIn("a", names)
+        self.assertNotIn("b", names)
+
+
+class TestInlineAmbiguousNoPollution(unittest.TestCase):
+    """Integration: an ambiguous (same-strength) captured chain must get NO
+    file identity -> falls back to captured identity, so it can never write a
+    wrong file's stats into the shared dataset."""
+
+    def _node(self):
+        return lora_optimizer.LoRAOptimizerInline()
+
+    @staticmethod
+    def _out(result):
+        return result["result"] if isinstance(result, dict) else result
+
+    def test_same_strength_chain_gets_no_resolved_file_name(self):
+        patches = _chain_patches((0.8, {"a": _adapter()}),
+                                 (0.8, {"b": _adapter()}))
+        stamps = [{"name": "styles/a.safetensors", "strength_model": 0.8,
+                   "strength_clip": 0.8},
+                  {"name": "styles/b.safetensors", "strength_model": 0.8,
+                   "strength_clip": 0.8}]
+        model = _AttachModel(patches, stamps)
+        node = self._node()
+        seen = {}
+
+        def fake_merge(m, stack, output_strength, **kw):
+            seen["stack"] = stack
+            return (m, kw.get("clip"), "engine report", None, None)
+        node.optimize_merge = fake_merge
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=lambda kind, name: "/loras/" + name):
+            result = node.execute_inline(model, output_strength=1.0)
+        report = self._out(result)[2]
+        # No real name displayed, no file identity attached.
+        self.assertNotIn("styles/a.safetensors", report)
+        self.assertNotIn("styles/b.safetensors", report)
+        for item in seen["stack"]:
+            self.assertNotIn("_resolved_file_name", item)
+
+
 class TestLoraNameStampHardening(unittest.TestCase):
     """Review hardening: 0/0 early-return guard, signature-agnostic wrapper,
     functools.wraps + __wrapped__-chain idempotency."""
