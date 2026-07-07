@@ -2080,6 +2080,103 @@ class TestInlineMemoryCrossSession(unittest.TestCase):
                 self.assertEqual(len(out2), 5)
 
 
+class TestInlineAnalysisCacheCrossSession(unittest.TestCase):
+    """FIX #14: the whole-stack analysis cache is KEYED (names_only_hash) on
+    captured content, so the cache FILE is found cross-session — but the stored
+    source_loras and the _remap_analysis_indices name comparison used the raw,
+    per-session salted name, so validation mismatched -> miss -> Pass 1
+    recomputed. Routing both through _persistent_lora_key (session-stable) makes
+    the analysis cache HIT cross-session for inline captured chains. File-based
+    items are unchanged (_persistent_lora_key returns their name)."""
+
+    def _captured_item(self, salt, up, down):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"k": _adapter(up=up.clone(), down=down.clone())})))
+        return lora_optimizer.LoRAOptimizerInline._chain_groups_to_stack(
+            mg, [], [_slot()], "simple", name_salt=f" [{salt}]")[0]
+
+    # ---- _cache_source_loras: what gets STORED in the analysis cache ----
+
+    def test_cache_source_loras_persistent_for_captured(self):
+        # Two sessions, same captured content, different salted names -> the
+        # stored source-LoRA keys are IDENTICAL (session-stable), not salted.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            s1 = self._captured_item("aaaaaaaa", up, down)
+            s2 = self._captured_item("bbbbbbbb", up, down)
+            self.assertNotEqual(s1["name"], s2["name"])       # salted names differ
+            src1 = lora_optimizer.LoRAAutoTuner._cache_source_loras([s1])
+            src2 = lora_optimizer.LoRAAutoTuner._cache_source_loras([s2])
+            self.assertTrue(src1[0]["name"].startswith("captured:"))
+            self.assertEqual(src1, src2)                      # session-stable
+
+    def test_cache_source_loras_is_name_for_file(self):
+        # Regression: file items store their name, byte-identical to the old
+        # [{"name": item["name"]}] formula.
+        item = {"name": "style.safetensors", "strength": 1.0, "lora": {}}
+        self.assertEqual(
+            lora_optimizer.LoRAAutoTuner._cache_source_loras([item]),
+            [{"name": "style.safetensors"}])
+
+    # ---- _remap_analysis_indices: how the cache is VALIDATED on load ----
+
+    def test_remap_matches_captured_across_salt(self):
+        # Session 1 stored persistent-keyed source_loras; session 2 loads with a
+        # differently-salted captured item of the SAME content. Pre-fix the
+        # remap compared raw l["name"] (salted, mismatched) -> None (miss);
+        # post-fix it compares persistent keys -> match -> returns per_prefix.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        per_prefix = {"blk": {"per_lora_norm_sq": {"0": 1.0}}}
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            s1 = self._captured_item("aaaaaaaa", up, down)
+            s2 = self._captured_item("bbbbbbbb", up, down)
+            # session-1's stored source_loras (persistent-keyed); built here
+            # without the helper so this pins the remap change in isolation.
+            cached_src = [{"name":
+                           lora_optimizer.LoRAAutoTuner._persistent_lora_key(s1)}]
+            out = lora_optimizer.LoRAAutoTuner._remap_analysis_indices(
+                per_prefix, cached_src, [s2])
+        self.assertEqual(out, per_prefix)                     # HIT, not None
+
+    def test_remap_file_items_unchanged(self):
+        # Regression: file items still validate by name (same order -> as-is).
+        per_prefix = {"blk": {"per_lora_norm_sq": {"0": 1.0}}}
+        cached_src = [{"name": "a.safetensors"}]
+        active = [{"name": "a.safetensors", "strength": 1.0, "lora": {}}]
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            out = lora_optimizer.LoRAAutoTuner._remap_analysis_indices(
+                per_prefix, cached_src, active)
+        self.assertEqual(out, per_prefix)
+
+    # ---- integration: real save -> load round-trip HITS cross-session ----
+
+    def test_analysis_cache_hits_cross_session_for_captured(self):
+        import tempfile
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        per_prefix = {"blk": {"per_lora_norm_sq": {"0": 1.0}}}
+        with tempfile.TemporaryDirectory() as memdir:
+            with mock.patch("lora_optimizer.AUTOTUNER_MEMORY_DIR", memdir), \
+                 mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                                   return_value=None):
+                s1 = self._captured_item("aaaaaaaa", up, down)
+                s2 = self._captured_item("bbbbbbbb", up, down)   # same content
+                h1, _ = lora_optimizer.LoRAAutoTuner._compute_names_only_hash([s1])
+                src = lora_optimizer.LoRAAutoTuner._cache_source_loras([s1])
+                lora_optimizer.LoRAAutoTuner._analysis_cache_save(
+                    h1, per_prefix, src)
+                # Session 2: content-based cache FILE key already matches...
+                h2, _ = lora_optimizer.LoRAAutoTuner._compute_names_only_hash([s2])
+                self.assertEqual(h1, h2)
+                # ...and now the stored/validated identities match too -> HIT.
+                got = lora_optimizer.LoRAAutoTuner._analysis_cache_load(
+                    h2, active_loras=[s2])
+                self.assertIsNotNone(got)
+                self.assertIn("blk", got)
+
+
 class _AttachHost:
     """Minimal object exposing the ModelPatcher attachment API."""
     def __init__(self):

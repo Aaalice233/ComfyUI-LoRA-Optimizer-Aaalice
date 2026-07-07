@@ -10452,6 +10452,18 @@ class LoRAAutoTuner(LoRAOptimizer):
                             f"{names_only_hash}.analysis.json")
 
     @staticmethod
+    def _cache_source_loras(active_loras):
+        """Source-LoRA identity list stored in the whole-stack analysis cache.
+        Keys each item on its SESSION-STABLE persistent key (captured:<hash> for
+        inline captures, else the file name) — the same identity
+        _remap_analysis_indices validates against — so the analysis cache HITS
+        cross-session for captured chains, whose raw names carry a per-session
+        salt. File items are unchanged: _persistent_lora_key returns their
+        name, so this is byte-identical to the old [{"name": item["name"]}]."""
+        return [{"name": LoRAAutoTuner._persistent_lora_key(item)}
+                for item in active_loras]
+
+    @staticmethod
     def _remap_analysis_indices(per_prefix, cached_source_loras, active_loras):
         """
         Remap index-keyed analysis-cache entries from the cached stack order
@@ -10466,8 +10478,17 @@ class LoRAAutoTuner(LoRAOptimizer):
         if not per_prefix or not cached_source_loras:
             return None
         try:
-            cached_names = [l["name"] for l in cached_source_loras]
-            current_names = [l["name"] for l in active_loras]
+            # Compare on the SESSION-STABLE persistent key, not the raw name:
+            # captured inline items carry a per-session salted name, so a raw
+            # comparison never matches across sessions and the (content-keyed)
+            # analysis cache misses. File items: _persistent_lora_key returns
+            # their name -> byte-identical to the old raw comparison. Stored
+            # source_loras are already persistent-keyed dicts (no
+            # _precomputed_diffs), so this returns their stored key unchanged.
+            cached_names = [LoRAAutoTuner._persistent_lora_key(l)
+                            for l in cached_source_loras]
+            current_names = [LoRAAutoTuner._persistent_lora_key(l)
+                             for l in active_loras]
         except (TypeError, KeyError):
             return None
         if sorted(cached_names) != sorted(current_names):
@@ -12126,7 +12147,7 @@ class LoRAAutoTuner(LoRAOptimizer):
             pbar = _NullPbar()
         else:
             pbar = comfy.utils.ProgressBar(len(target_groups) + n_pbar_merges)
-        source_loras_for_cache = [{"name": item["name"]} for item in active_loras]
+        source_loras_for_cache = self._cache_source_loras(active_loras)
         partial_accumulated = dict(cached_analysis or {})
         # Throttle checkpoint writes: each save serializes the whole
         # accumulated dict (O(P) JSON per write → O(P²) over a run); a crash
