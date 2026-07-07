@@ -5612,7 +5612,15 @@ class LoRAOptimizer(_LoRAMergeBase):
             if isinstance(item, dict):
                 if "_merge_formula" in item:
                     continue
-                entries.append((str(item.get("name", "")),
+                # Captured items key on their content (session-stable), not
+                # their per-session salted name — this signature feeds the
+                # persistent-memory settings hash, so a salted name here would
+                # change the memory file path every session and break cross-
+                # session hits. File items use their name exactly as before.
+                name = (LoRAAutoTuner._persistent_lora_key(item)
+                        if item.get("_precomputed_diffs")
+                        else str(item.get("name", "")))
+                entries.append((name,
                                 item.get("conflict_mode", "all"),
                                 item.get("key_filter", "all"),
                                 bool(item.get("preserve", False))))
@@ -10112,6 +10120,12 @@ class LoRAAutoTuner(LoRAOptimizer):
         """
         entries = []
         for item in active_loras:
+            if item.get("_precomputed_diffs"):
+                # Captured items: their name+mtime+size would change every
+                # session (salted name, no file), so key on the session-stable
+                # content identity to get cross-session analysis-cache reuse.
+                entries.append((LoRAAutoTuner._persistent_lora_key(item), 0, 0))
+                continue
             name = item["name"]
             path = folder_paths.get_full_path("loras", name)
             if path is not None:
@@ -10333,7 +10347,17 @@ class LoRAAutoTuner(LoRAOptimizer):
 
     @staticmethod
     def _lora_identity_hash(lora_item):
-        """16-char hex hash of a single LoRA's file identity (name+mtime+size)."""
+        """16-char hex hash of a single LoRA's file identity (name+mtime+size).
+
+        Captured/virtual items (_precomputed_diffs) have no file and a per-
+        session salted name, so name+mtime+size would change every session and
+        their per-LoRA/pair analysis disk caches could never cross-session hit.
+        They hash their session-stable content key instead — giving inline the
+        same cross-session analysis-cache reuse the file-based Stack path has.
+        File items are untouched (the branch below runs only for captured)."""
+        if lora_item.get("_precomputed_diffs"):
+            key = LoRAAutoTuner._persistent_lora_key(lora_item)
+            return hashlib.sha256(key.encode()).hexdigest()[:16]
         name = lora_item["name"]
         path = folder_paths.get_full_path("loras", name)
         if path is not None:
@@ -10520,6 +10544,37 @@ class LoRAAutoTuner(LoRAOptimizer):
             logging.warning(f"[AutoTuner Community] Could not compute content hash for "
                             f"'{lora_item.get('name', '?')}': {e}")
             return None
+
+    @staticmethod
+    def _memo_content_hash(lora_item):
+        """Memoized _lora_content_hash, cached on the item dict. Content-hashing
+        captured factor tensors is expensive (hundreds of MB across ~1500 keys)
+        and the same active_loras dicts are reused across every candidate +
+        memory + community lookup in a run, so compute it at most once per LoRA.
+        The value is deterministic, so memoizing on the dict is always safe.
+        File items get the same (cheap, disk-cached) hash — result byte-identical,
+        only an in-memory dict key is added (never serialized anywhere)."""
+        if "_content_hash" in lora_item:
+            return lora_item["_content_hash"]
+        ch = LoRAAutoTuner._lora_content_hash(lora_item)
+        lora_item["_content_hash"] = ch
+        return ch
+
+    @staticmethod
+    def _persistent_lora_key(lora_item):
+        """Session-stable identity for the persistent memory + per-LoRA/pair
+        analysis-cache keys.
+
+        File-based items key on their NAME (name+mtime+size is stable across
+        sessions). Captured/virtual items (_precomputed_diffs) have no file and
+        a per-session salted name (``chain lora #N [uuid]``), so they key on
+        their CONTENT hash instead — that is what makes inline memory /
+        community persist across sessions. Independent of the community_cache
+        gate: memory needs this even when community is disabled."""
+        if not lora_item.get("_precomputed_diffs"):
+            return lora_item["name"]
+        ch = LoRAAutoTuner._memo_content_hash(lora_item)
+        return f"captured:{ch}" if ch is not None else lora_item["name"]
 
     # --- Community cache: network I/O ---
 
@@ -11085,7 +11140,11 @@ class LoRAAutoTuner(LoRAOptimizer):
             "lora_hash": lora_hash,
             "settings_hash": settings_hash,
             "settings": settings,
-            "source_loras": [{"name": l["name"], "strength": l["strength"]}
+            # Persist the session-stable identity as the matched "name" so the
+            # names-only fallback (_memory_find_by_names) cross-session hits for
+            # captured chains. File items store their name exactly as before.
+            "source_loras": [{"name": LoRAAutoTuner._persistent_lora_key(l),
+                              "strength": l["strength"]}
                              for l in source_loras],
             "tuner_data": tuner_data,
         }
@@ -11321,12 +11380,16 @@ class LoRAAutoTuner(LoRAOptimizer):
             else:
                 logging.info("[AutoTuner Analysis Cache] MISS")
 
-        # Order-independent hash for persistent memory (sorted pairs)
+        # Order-independent hash for persistent memory (sorted pairs).
+        # Captured items key on their content hash (session-stable) instead of
+        # their per-session salted name — see _persistent_lora_key. File items
+        # key on their name exactly as before.
         if memory_mode != "disabled" and not _is_sub_merge:
             if memory_mode == "auto_ignore_strength":
-                _mem_key = sorted([l["name"] for l in active_loras])
+                _mem_key = sorted([self._persistent_lora_key(l) for l in active_loras])
             else:
-                _mem_key = sorted([(l["name"], l["strength"]) for l in active_loras])
+                _mem_key = sorted([(self._persistent_lora_key(l), l["strength"])
+                                   for l in active_loras])
             memory_lora_hash = hashlib.sha256(
                 json.dumps(_mem_key, separators=(",", ":")).encode()
             ).hexdigest()[:16]
@@ -11431,7 +11494,14 @@ class LoRAAutoTuner(LoRAOptimizer):
                          f"for {len(active_loras)} LoRA(s)...")
             _all_hashed = True
             for _i, _lora in enumerate(active_loras):
-                _ch = self._lora_content_hash(_lora)
+                # Reuse the memoized hash the memory key above already computed
+                # for captured items; otherwise compute via the INSTANCE method
+                # so per-instance overrides and the file-based path are untouched.
+                if "_content_hash" in _lora:
+                    _ch = _lora["_content_hash"]
+                else:
+                    _ch = self._lora_content_hash(_lora)
+                    _lora["_content_hash"] = _ch
                 if _ch is not None:
                     content_hashes[_i] = _ch
                 else:
@@ -11606,9 +11676,10 @@ class LoRAAutoTuner(LoRAOptimizer):
                 if cached_tuner_data is None and memory_mode == "auto_ignore_strength":
                     # Fallback: find any strength-sensitive entry with matching LoRA names,
                     # preferring the one trained at the highest absolute strengths
-                    lora_names_sorted = sorted([l["name"] for l in active_loras])
+                    lora_names_sorted = sorted(
+                        [self._persistent_lora_key(l) for l in active_loras])
                     lora_signs_sorted = sorted(
-                        (l["name"], 1 if l["strength"] >= 0 else -1)
+                        (self._persistent_lora_key(l), 1 if l["strength"] >= 0 else -1)
                         for l in active_loras)
                     cached_tuner_data = self._memory_find_by_names(
                         lora_names_sorted, settings_hash, top_n,

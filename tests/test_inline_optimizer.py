@@ -1755,5 +1755,154 @@ class TestCapturedContentHash(unittest.TestCase):
         self.assertNotEqual(self._hash(a), self._hash(b))
 
 
+class TestCapturedPersistentIdentity(unittest.TestCase):
+    """Critical #1: the persistent memory + analysis-cache keys must derive
+    from captured CONTENT (session-stable), not the per-session salted item
+    name — otherwise inline memory saves under a fresh key every ComfyUI
+    session and never reads back. File-based items are unchanged."""
+
+    KEY = "layer.weight"
+
+    def _captured_item(self, salt, up, down):
+        # One session's virtual stack item: identical content, session salt.
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"k": _adapter(up=up.clone(), down=down.clone())})))
+        return lora_optimizer.LoRAOptimizerInline._chain_groups_to_stack(
+            mg, [], [_slot()], "simple", name_salt=f" [{salt}]")[0]
+
+    def test_persistent_key_stable_across_sessions_for_captured(self):
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            s1 = self._captured_item("aaaaaaaa", up, down)
+            s2 = self._captured_item("bbbbbbbb", up, down)
+            self.assertNotEqual(s1["name"], s2["name"])   # salted names differ
+            k1 = lora_optimizer.LoRAAutoTuner._persistent_lora_key(s1)
+            k2 = lora_optimizer.LoRAAutoTuner._persistent_lora_key(s2)
+            self.assertTrue(k1.startswith("captured:"))
+            self.assertEqual(k1, k2)      # content identity is session-stable
+
+    def test_persistent_key_is_name_for_file_items(self):
+        # Regression: file-based items (no _precomputed_diffs) key on name.
+        item = {"name": "style.safetensors", "strength": 1.0, "lora": {}}
+        self.assertEqual(
+            lora_optimizer.LoRAAutoTuner._persistent_lora_key(item),
+            "style.safetensors")
+
+    def test_identity_hash_stable_across_sessions_for_captured(self):
+        # The per-LoRA/pair analysis DISK cache key (_lora_identity_hash) must
+        # also be session-stable for captured items.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            h1 = lora_optimizer.LoRAAutoTuner._lora_identity_hash(
+                self._captured_item("aaaaaaaa", up, down))
+            h2 = lora_optimizer.LoRAAutoTuner._lora_identity_hash(
+                self._captured_item("bbbbbbbb", up, down))
+            self.assertEqual(len(h1), 16)
+            self.assertEqual(h1, h2)
+
+    def test_identity_hash_unchanged_for_file_items(self):
+        # Regression: file item identity hash == the pre-fix name+0+0 formula.
+        import hashlib, json
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            item = {"name": "x.safetensors", "strength": 1.0, "lora": {}}
+            got = lora_optimizer.LoRAAutoTuner._lora_identity_hash(item)
+        expected = hashlib.sha256(json.dumps(
+            ("x.safetensors", 0, 0), separators=(",", ":")).encode()).hexdigest()[:16]
+        self.assertEqual(got, expected)
+
+    def test_names_only_hash_stable_across_sessions_for_captured(self):
+        # The whole-stack analysis cache key must be session-stable too.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            s1 = [self._captured_item("aaaaaaaa", up, down)]
+            s2 = [self._captured_item("bbbbbbbb", up, down)]
+            h1, _ = lora_optimizer.LoRAAutoTuner._compute_names_only_hash(s1)
+            h2, _ = lora_optimizer.LoRAAutoTuner._compute_names_only_hash(s2)
+            self.assertEqual(h1, h2)
+
+    def test_per_lora_merge_signature_stable_across_sessions_for_captured(self):
+        # Feeds the memory settings_hash (part of the memory file path) — must
+        # not vary by salt or cross-session hits break.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            sig1 = lora_optimizer.LoRAAutoTuner._per_lora_merge_signature(
+                [self._captured_item("aaaaaaaa", up, down)])
+            sig2 = lora_optimizer.LoRAAutoTuner._per_lora_merge_signature(
+                [self._captured_item("bbbbbbbb", up, down)])
+            self.assertEqual(sig1, sig2)
+
+    def test_memo_content_hash_computed_once(self):
+        # Memoized on the item dict so re-hashing the (expensive) captured
+        # factors doesn't happen per candidate / per memory+community lookup.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        item = self._captured_item("aaaaaaaa", up, down)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            with mock.patch.object(
+                    lora_optimizer.LoRAAutoTuner, "_lora_content_hash",
+                    wraps=lora_optimizer.LoRAAutoTuner._lora_content_hash) as spy:
+                a = lora_optimizer.LoRAAutoTuner._persistent_lora_key(item)
+                b = lora_optimizer.LoRAAutoTuner._memo_content_hash(item)
+                c = lora_optimizer.LoRAAutoTuner._persistent_lora_key(item)
+        self.assertEqual(a, c)
+        self.assertEqual(a, f"captured:{b}")
+        self.assertEqual(spy.call_count, 1)   # computed exactly once
+
+
+class TestInlineMemoryCrossSession(unittest.TestCase):
+    """The headline: a memory entry saved in 'session 1' (one salt) is found
+    in 'session 2' (different salt, identical captured content) — driving the
+    REAL auto_tune through execute_inline. Fails on name-based keys (no hit),
+    passes on content-based keys."""
+
+    KEY = "layer.weight"
+
+    @staticmethod
+    def _chain():
+        up_a = torch.linspace(-1.0, 1.0, 16 * 4).reshape(16, 4)
+        down_a = torch.linspace(0.5, -0.5, 4 * 16).reshape(4, 16)
+        up_b = torch.linspace(-0.8, 1.2, 16 * 4).reshape(16, 4)
+        down_b = torch.linspace(0.3, -0.7, 4 * 16).reshape(4, 16)
+        return (
+            (1.0, {TestInlineMemoryCrossSession.KEY: _adapter(up=up_a, down=down_a)}),
+            (0.7, {TestInlineMemoryCrossSession.KEY: _adapter(up=up_b, down=down_b)}),
+        )
+
+    def _run_session(self, salt_uuid):
+        applied = {}
+        model = _pipeline_model(_chain_patches(*self._chain()), applied)
+        model.patches_uuid = salt_uuid          # drives the per-session name salt
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": self.KEY}
+        node._autotuner_delegate = lora_optimizer.LoRAAutoTuner()
+        node._autotuner_delegate._get_model_keys = lambda m: {"alias_layer": self.KEY}
+        calls = []
+        with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
+                               _realistic_load_lora_for_models(calls)):
+            result = node.execute_inline(
+                model, output_strength=1.0,
+                settings=_autotuner_settings(architecture_preset="dit",
+                                             memory_mode="auto", top_n=1))
+        return result["result"] if isinstance(result, dict) else result
+
+    def test_memory_saved_in_session1_is_found_in_session2(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as memdir:
+            # captured content has no file -> force in-memory content hashing
+            with mock.patch("lora_optimizer.AUTOTUNER_MEMORY_DIR", memdir), \
+                 mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                                   return_value=None):
+                out1 = self._run_session(uuid.uuid4())
+                self.assertNotIn("MEMORY HIT", out1[2])     # session 1: full sweep
+                out2 = self._run_session(uuid.uuid4())      # different salt
+                self.assertIn("MEMORY HIT", out2[2])        # session 2: cross-session hit
+                self.assertEqual(len(out2), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
