@@ -850,8 +850,79 @@ class TestSingleLoraVirtualPath(unittest.TestCase):
         self.assertTrue(calls[0]["matched"])
 
 
+class TestChainOptionsNode(unittest.TestCase):
+    """The side node carries the per-LoRA widgets and emits a
+    LORA_CHAIN_OPTIONS payload the inline node consumes by chain order."""
+
+    def _node(self):
+        return lora_optimizer.LoRAInlineChainOptions()
+
+    @staticmethod
+    def _full_slot_kwargs():
+        """One distinct value per widget across all 10 slots so both the
+        per-slot mapping and lora_count truncation are observable."""
+        cls = lora_optimizer.LoRAInlineChainOptions
+        kw = {}
+        for i in range(1, cls.MAX_LORAS + 1):
+            kw[f"enabled_{i}"] = (i % 2 == 0)
+            kw[f"strength_{i}"] = float(i)
+            kw[f"model_strength_{i}"] = float(i) + 0.1
+            kw[f"clip_strength_{i}"] = float(i) + 0.2
+            kw[f"conflict_mode_{i}"] = "all"
+            kw[f"key_filter_{i}"] = "all"
+            kw[f"preserve_{i}"] = (i % 2 == 1)
+        return kw
+
+    def test_returns_visibility_passthrough_and_slot_count(self):
+        node = self._node()
+        (out,) = node.build_options("advanced", 3, **self._full_slot_kwargs())
+        self.assertEqual(out["visibility"], "advanced")
+        self.assertEqual(len(out["slots"]), 3)
+
+    def test_slot_dicts_have_all_seven_keys_with_passed_values(self):
+        node = self._node()
+        (out,) = node.build_options("simple", 2, **self._full_slot_kwargs())
+        expected_keys = set(lora_optimizer.LoRAOptimizerInline._SLOT_DEFAULTS)
+        self.assertEqual(len(expected_keys), 7)
+        for i, slot in enumerate(out["slots"], start=1):
+            self.assertEqual(set(slot), expected_keys)
+            self.assertEqual(slot["strength"], float(i))
+            self.assertEqual(slot["model_strength"], float(i) + 0.1)
+            self.assertEqual(slot["clip_strength"], float(i) + 0.2)
+            self.assertEqual(slot["enabled"], (i % 2 == 0))
+            self.assertEqual(slot["preserve"], (i % 2 == 1))
+
+    def test_lora_count_truncates_slots(self):
+        node = self._node()
+        (out,) = node.build_options("simple", 2, **self._full_slot_kwargs())
+        self.assertEqual(len(out["slots"]), 2)  # only 2 though 10 widgets set
+
+    def test_missing_widget_uses_slot_default(self):
+        # widgets not passed fall back to _SLOT_DEFAULTS (single source)
+        node = self._node()
+        (out,) = node.build_options("simple", 1)
+        self.assertEqual(out["slots"][0],
+                         dict(lora_optimizer.LoRAOptimizerInline._SLOT_DEFAULTS))
+
+    def test_input_types_surface(self):
+        cls = lora_optimizer.LoRAInlineChainOptions
+        it = cls.INPUT_TYPES()
+        req = it["required"]
+        self.assertIn("settings_visibility", req)
+        self.assertIn("lora_count", req)
+        for i in (1, cls.MAX_LORAS):
+            for base in ("enabled", "strength", "model_strength",
+                         "clip_strength", "conflict_mode", "key_filter",
+                         "preserve"):
+                self.assertIn(f"{base}_{i}", req)
+        self.assertNotIn("optional", it)  # pure widget node, no sockets
+        self.assertEqual(cls.FUNCTION, "build_options")
+        self.assertEqual(cls.RETURN_TYPES, ("LORA_CHAIN_OPTIONS",))
+        self.assertEqual(cls.RETURN_NAMES, ("chain_options",))
+
+
 class TestRegistration(unittest.TestCase):
-    def test_node_registered(self):
+    def test_inline_node_registered(self):
         self.assertIn("LoRAOptimizerInline", lora_optimizer.NODE_CLASS_MAPPINGS)
         self.assertIs(lora_optimizer.NODE_CLASS_MAPPINGS["LoRAOptimizerInline"],
                       lora_optimizer.LoRAOptimizerInline)
@@ -860,6 +931,16 @@ class TestRegistration(unittest.TestCase):
         self.assertEqual(
             lora_optimizer.NODE_DISPLAY_NAME_MAPPINGS["LoRAOptimizerInline"],
             "LoRA Optimizer (Inline Chain)")
+
+    def test_options_node_registered(self):
+        self.assertIn("LoRAInlineChainOptions",
+                      lora_optimizer.NODE_CLASS_MAPPINGS)
+        self.assertIs(
+            lora_optimizer.NODE_CLASS_MAPPINGS["LoRAInlineChainOptions"],
+            lora_optimizer.LoRAInlineChainOptions)
+        self.assertEqual(
+            lora_optimizer.NODE_DISPLAY_NAME_MAPPINGS["LoRAInlineChainOptions"],
+            "LoRA Inline Chain Options")
 
 
 def _advanced_settings(**overrides):

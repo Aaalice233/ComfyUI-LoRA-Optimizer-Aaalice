@@ -9332,6 +9332,102 @@ class LoRAOptimizerSimple(LoRAOptimizer):
         return base
 
 
+class LoRAInlineChainOptions:
+    """
+    Side node for LoRA Optimizer (Inline Chain): carries the per-LoRA option
+    widgets and emits them as a LORA_CHAIN_OPTIONS payload. The inline node
+    attributes each slot to a captured loader by chain order (slot #1 = first
+    loader). Connect this node's chain_options output to the inline node's
+    chain_options input; leaving it unconnected merges every captured LoRA
+    with default options.
+    """
+
+    MAX_LORAS = 10
+    CATEGORY = "LoRA Optimizer"
+    FUNCTION = "build_options"
+    RETURN_TYPES = ("LORA_CHAIN_OPTIONS",)
+    RETURN_NAMES = ("chain_options",)
+    DESCRIPTION = ("Per-LoRA options for the LoRA Optimizer (Inline Chain) node. "
+                   "Set model/clip multipliers, conflict mode, key filter, and "
+                   "preserve per LoRA; slot #1 = first Load LoRA in the chain.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = {
+            "required": {
+                "settings_visibility": (["simple", "advanced"], {
+                    "tooltip": "Simple: one strength multiplier per LoRA. "
+                               "Advanced: separate model/clip multipliers, conflict mode, "
+                               "key filter, and preserve per LoRA."
+                }),
+                "lora_count": ("INT", {
+                    "default": 3, "min": 1, "max": cls.MAX_LORAS, "step": 1,
+                    "tooltip": "How many option slots to show. Slot #1 = first Load LoRA "
+                               "in the chain (closest to the checkpoint)."
+                }),
+            },
+        }
+        for i in range(1, cls.MAX_LORAS + 1):
+            inputs["required"][f"enabled_{i}"] = ("BOOLEAN", {
+                "default": True,
+                "tooltip": f"Off: LoRA #{i} is removed from the model entirely "
+                           f"(not merged, not applied)."
+            })
+            inputs["required"][f"strength_{i}"] = ("FLOAT", {
+                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
+                "tooltip": f"Multiplier on the strength LoRA #{i}'s loader set "
+                           f"(1.0 = keep as loaded)."
+            })
+            inputs["required"][f"model_strength_{i}"] = ("FLOAT", {
+                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
+                "tooltip": f"Multiplier on LoRA #{i}'s loader strength for image "
+                           f"generation (visual style, composition). 1.0 = keep as loaded."
+            })
+            inputs["required"][f"clip_strength_{i}"] = ("FLOAT", {
+                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
+                "tooltip": f"Multiplier on LoRA #{i}'s loader strength for text "
+                           f"understanding (prompt interpretation). 1.0 = keep as loaded."
+            })
+            inputs["required"][f"conflict_mode_{i}"] = (["all", "low_conflict", "high_conflict"], {
+                "default": "all",
+                "tooltip": f"LoRA #{i} conflict filter. "
+                           f"'all': apply everywhere (default). "
+                           f"'low_conflict': only where this LoRA agrees with the majority. "
+                           f"'high_conflict': only where this LoRA disagrees."
+            })
+            inputs["required"][f"key_filter_{i}"] = (
+                ["all", "shared_only", "unique_only", "audio_only", "no_audio"], {
+                "default": "all",
+                "tooltip": f"LoRA #{i} key filter. "
+                           f"'all': contribute all keys (default). "
+                           f"'shared_only': only keys present in 2+ LoRAs. "
+                           f"'unique_only': only keys present in exactly 1 LoRA. "
+                           f"'audio_only': only audio layers (LTX-2 / ACE-Step). "
+                           f"'no_audio': only non-audio (video) layers."
+            })
+            inputs["required"][f"preserve_{i}"] = ("BOOLEAN", {
+                "default": False,
+                "tooltip": f"Mark LoRA #{i} as a STYLE LoRA to protect it in conflict merges. "
+                           f"When on, it is never trimmed by sparsification and is exempt from "
+                           f"TIES sign-election (which deletes a style's minority-sign direction) "
+                           f"— its full contribution is added on top of the conflict-resolved merge. "
+                           f"Use when a style LoRA keeps disappearing when merged with a content LoRA."
+            })
+        return inputs
+
+    def build_options(self, settings_visibility, lora_count, **slot_kwargs):
+        # Reference LoRAOptimizerInline._SLOT_DEFAULTS lazily (this class is
+        # defined BEFORE it, but the method runs at execution time when both
+        # classes exist) so the 7 keys + defaults have a single source and the
+        # two nodes can't drift.
+        defaults = LoRAOptimizerInline._SLOT_DEFAULTS
+        slots = [
+            {k: slot_kwargs.get(f"{k}_{i}", d) for k, d in defaults.items()}
+            for i in range(1, int(lora_count) + 1)
+        ]
+        return ({"visibility": settings_visibility, "slots": slots},)
+
+
 class LoRAOptimizerInline(LoRAOptimizer):
     """
     Inline chain filter: merges the LoRA patches that upstream regular
@@ -15447,6 +15543,7 @@ NODE_CLASS_MAPPINGS = {
     "LoRAStackDynamic": LoRAStackDynamic,
     "LoRAOptimizer": LoRAOptimizer,
     "LoRAOptimizerSimple": LoRAOptimizerSimple,
+    "LoRAInlineChainOptions": LoRAInlineChainOptions,
     "LoRAOptimizerInline": LoRAOptimizerInline,
     "SaveMergedLoRA": SaveMergedLoRA,
     "BuildAutoTunerPythonEvaluator": BuildAutoTunerPythonEvaluator,
@@ -15474,6 +15571,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LoRAStackDynamic": "LoRA Stack (Dynamic)",
     "LoRAOptimizer": "LoRA Optimizer (Legacy)",
     "LoRAOptimizerSimple": "LoRA Optimizer",
+    "LoRAInlineChainOptions": "LoRA Inline Chain Options",
     "LoRAOptimizerInline": "LoRA Optimizer (Inline Chain)",
     "SaveMergedLoRA": "Save Merged LoRA",
     "BuildAutoTunerPythonEvaluator": "Build AutoTuner Python Evaluator",
