@@ -9470,8 +9470,6 @@ class LoRAOptimizerInline(LoRAOptimizer):
     by their order in the loader chain (first loader = LoRA #1).
     """
 
-    MAX_LORAS = 10
-
     _SLOT_DEFAULTS = {
         "enabled": True,
         "strength": 1.0,
