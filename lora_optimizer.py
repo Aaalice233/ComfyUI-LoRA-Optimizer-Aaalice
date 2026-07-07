@@ -10403,15 +10403,42 @@ class LoRAAutoTuner(LoRAOptimizer):
                 lora_sd = lora_item.get("lora")
                 if isinstance(lora_sd, dict) and lora_sd:
                     h = hashlib.sha256()
-                    for k in sorted(lora_sd.keys()):
-                        v = lora_sd[k]
-                        h.update(k.encode())
-                        if hasattr(v, "detach"):
-                            t = v.detach().to("cpu", torch.float32).contiguous()
+
+                    def _feed(val):
+                        # Value-based, object-identity-INDEPENDENT hashing so a
+                        # captured chain gets a stable content hash across
+                        # sessions/machines. Tensors -> shape + float32 bytes
+                        # (float32 normalization makes bf16/fp16 captures
+                        # portable). Captured adapter objects
+                        # (LoRAAdapter/LoKr/LoHa) -> their .weights factor
+                        # tensors (up/down/alpha/mid) recursively, so the hash
+                        # tracks the actual weights, not the object address.
+                        # ("diff",(tensor,))/tuple/list payloads -> a type
+                        # marker + contained tensors. Only opaque leftovers
+                        # fall back to repr (last resort).
+                        if hasattr(val, "detach"):
+                            t = val.detach().to("cpu", torch.float32).contiguous()
                             h.update(str(tuple(t.shape)).encode())
                             h.update(t.numpy().tobytes())
+                        elif hasattr(val, "weights"):
+                            h.update(b"adapter")
+                            for w in val.weights:
+                                _feed(w)
+                        elif isinstance(val, (tuple, list)):
+                            h.update(b"seq")
+                            for w in val:
+                                _feed(w)
                         else:
-                            h.update(repr(v).encode())
+                            h.update(repr(val).encode())
+
+                    # Stringify keys before sorting/encoding: captured items may
+                    # key by (str, offset) tuples (fused-QKV), which crash a bare
+                    # .encode(). For plain string keys str(k)==k and the sort
+                    # order is unchanged, so plain-tensor dicts stay byte-
+                    # identical to the pre-fix hash.
+                    for k in sorted(lora_sd.keys(), key=lambda x: str(x)):
+                        h.update(str(k).encode())
+                        _feed(lora_sd[k])
                     return h.hexdigest()[:16]
                 return None
             st = os.stat(path)

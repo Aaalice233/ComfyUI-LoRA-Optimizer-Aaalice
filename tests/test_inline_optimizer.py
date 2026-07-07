@@ -1405,5 +1405,119 @@ class TestInlineRankReporting(unittest.TestCase):
         self.assertEqual(lora_data["sum_rank"], 192)   # NOT floored to 64
 
 
+class TestCapturedContentHash(unittest.TestCase):
+    """Commit A: _lora_content_hash must produce a STABLE 16-hex content hash
+    for captured chain items (adapter objects, tuple keys, diff tuples),
+    keyed on the factor VALUES not object identity, so inline chains get a
+    persistent memory/community identity across sessions and machines. The
+    file-based path and plain-tensor path stay byte-identical."""
+
+    def _hash(self, item):
+        # Captured items have no file on disk -> force the in-memory fallback.
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            return lora_optimizer.LoRAAutoTuner._lora_content_hash(item)
+
+    def test_captured_adapter_item_hashes_to_stable_16hex(self):
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        h = self._hash({"name": "chain lora #1 [x]",
+                        "lora": {"k": _adapter(up=up, down=down)}})
+        self.assertIsNotNone(h)
+        self.assertEqual(len(h), 16)
+        int(h, 16)   # valid hex
+
+    def test_hash_identical_for_fresh_adapters_with_same_values(self):
+        # Two DIFFERENT adapter OBJECTS holding the SAME tensor values must
+        # hash identically -> content-based, not identity-based. Pre-fix this
+        # failed: adapters have no .detach, so repr(v) (memory address) was
+        # hashed and differed per object.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        a1 = _adapter(up=up.clone(), down=down.clone())
+        a2 = _adapter(up=up.clone(), down=down.clone())
+        self.assertIsNot(a1, a2)
+        h1 = self._hash({"name": "chain lora #1 [aaa]", "lora": {"k": a1}})
+        h2 = self._hash({"name": "chain lora #1 [bbb]", "lora": {"k": a2}})
+        self.assertEqual(h1, h2)
+
+    def test_hash_differs_when_a_weight_value_changes(self):
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        h1 = self._hash({"name": "n",
+                         "lora": {"k": _adapter(up=up.clone(), down=down.clone())}})
+        down2 = down.clone()
+        down2[0, 0] += 1.0
+        h2 = self._hash({"name": "n",
+                         "lora": {"k": _adapter(up=up.clone(), down=down2)}})
+        self.assertNotEqual(h1, h2)
+
+    def test_hash_stable_when_alpha_changes_is_reflected(self):
+        # alpha is a non-tensor weight element (repr-hashed) -> a different
+        # alpha must change the hash.
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        h1 = self._hash({"name": "n",
+                         "lora": {"k": _adapter(up=up.clone(), down=down.clone(),
+                                                alpha=4.0)}})
+        h2 = self._hash({"name": "n",
+                         "lora": {"k": _adapter(up=up.clone(), down=down.clone(),
+                                                alpha=2.0)}})
+        self.assertNotEqual(h1, h2)
+
+    def test_tuple_keys_hash_without_crashing_and_stably(self):
+        # Fused-QKV captures key the virtual dict by (str_key, offset) TUPLES.
+        # Pre-fix k.encode() crashed on a tuple; str(k) must be used.
+        off = (0, 0, 4)
+        up, down = torch.randn(8, 4), torch.randn(4, 8)
+        item1 = {"name": "n",
+                 "lora": {("k", off): _adapter(up=up.clone(), down=down.clone())}}
+        item2 = {"name": "n",
+                 "lora": {("k", off): _adapter(up=up.clone(), down=down.clone())}}
+        h1 = self._hash(item1)          # must not raise
+        self.assertEqual(len(h1), 16)
+        self.assertEqual(h1, self._hash(item2))
+
+    def test_diff_tuple_payload_hashes_stably_and_value_sensitively(self):
+        t = torch.randn(4, 4)
+        item1 = {"name": "n", "lora": {"k": ("diff", (t.clone(),))}}
+        item2 = {"name": "n", "lora": {"k": ("diff", (t.clone(),))}}
+        h1 = self._hash(item1)
+        self.assertEqual(len(h1), 16)
+        self.assertEqual(h1, self._hash(item2))
+        t2 = t.clone()
+        t2[0, 0] += 1.0
+        self.assertNotEqual(h1, self._hash({"name": "n",
+                                            "lora": {"k": ("diff", (t2,))}}))
+
+    def test_plain_tensor_dict_still_hashes_and_is_stable(self):
+        # Regression: LoRAExtractFromModel-style plain-tensor dicts still hash.
+        sd = {"blk.lora_up.weight": torch.ones(4, 2),
+              "blk.lora_down.weight": torch.ones(2, 4) * 0.5}
+        h1 = self._hash({"name": "<x>", "lora": sd})
+        self.assertIsNotNone(h1)
+        self.assertEqual(len(h1), 16)
+        self.assertEqual(h1, self._hash({"name": "<x>", "lora": dict(sd)}))
+
+    def test_plain_tensor_hash_byte_identical_to_prefix_reference(self):
+        # The plain-tensor code path must be UNCHANGED (existing
+        # LoRAExtractFromModel community entries must not shift). Reproduce the
+        # exact pre-fix per-key hashing and assert equality.
+        import hashlib
+        sd = {"b.up": torch.ones(4, 2), "b.down": torch.ones(2, 4) * 0.5}
+        h = hashlib.sha256()
+        for k in sorted(sd.keys()):
+            v = sd[k]
+            h.update(k.encode())
+            t = v.detach().to("cpu", torch.float32).contiguous()
+            h.update(str(tuple(t.shape)).encode())
+            h.update(t.numpy().tobytes())
+        expected = h.hexdigest()[:16]
+        self.assertEqual(self._hash({"name": "<x>", "lora": sd}), expected)
+
+    def test_two_different_captured_loras_differ(self):
+        a = {"name": "n", "lora": {"k": _adapter(up=torch.ones(8, 4),
+                                                 down=torch.ones(4, 8))}}
+        b = {"name": "n", "lora": {"k": _adapter(up=torch.zeros(8, 4),
+                                                 down=torch.ones(4, 8))}}
+        self.assertNotEqual(self._hash(a), self._hash(b))
+
+
 if __name__ == "__main__":
     unittest.main()
