@@ -3428,7 +3428,10 @@ class _LoRAMergeBase:
                 mat_up.flatten(start_dim=1).float(),
                 mat_down.flatten(start_dim=1).float(),
             )
-            return diff * (alpha / rank)
+            # alpha=None (PEFT/diffusers/AI-Toolkit LoRAs with no .alpha key)
+            # means no alpha/rank rescale — use up@down as-is, matching comfy
+            # (weight_adapter/lora.py) and the sibling LoKr/LoHa branches above.
+            return diff * (alpha / rank if alpha is not None else 1.0)
         raise ValueError(f"Unknown patch format: {type(patch)}")
 
     @staticmethod

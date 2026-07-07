@@ -11,17 +11,25 @@ import torch
 from tests.test_lora_optimizer import lora_optimizer
 
 
-def _adapter(rank=4, out_dim=8, in_dim=8, up=None, down=None):
+_ALPHA_DEFAULT = object()
+
+
+def _adapter(rank=4, out_dim=8, in_dim=8, up=None, down=None,
+             alpha=_ALPHA_DEFAULT):
     """Minimal LoRAAdapter-like payload the engine can expand. Explicit
     up/down matrices make the expanded diff deterministic (alpha == rank, so
-    the diff is exactly up @ down)."""
+    the diff is exactly up @ down). Pass alpha=None to mimic PEFT/diffusers/
+    AI-Toolkit LoRAs whose files carry no .alpha key — comfy stores such
+    adapters with alpha=None (scale 1.0)."""
     if up is None:
         up = torch.randn(out_dim, rank)
     if down is None:
         down = torch.randn(rank, in_dim)
+    if alpha is _ALPHA_DEFAULT:
+        alpha = float(rank)  # alpha == rank -> scale 1.0, diff == up @ down
     return lora_optimizer.LoRAAdapter(
         loaded_keys=set(),
-        weights=(up, down, float(rank), None, None, None),
+        weights=(up, down, alpha, None, None, None),
     )
 
 
@@ -70,6 +78,28 @@ class TestPatchClassification(unittest.TestCase):
     def test_malformed_diff_passes_through(self):
         e = _entry(1.0, ("diff", None))
         self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
+
+
+class TestNoneAlphaExpansion(unittest.TestCase):
+    """PEFT/diffusers/AI-Toolkit LoRAs have no .alpha key, so a captured comfy
+    LoRAAdapter carries alpha=None. _expand_patch_to_diff must treat that as
+    scale 1.0 (comfy semantics: scale = alpha/rank if alpha is not None else
+    1.0) instead of crashing on None / rank."""
+
+    def test_none_alpha_adapter_expands_at_scale_one(self):
+        up = torch.randn(8, 4)
+        down = torch.randn(4, 8)
+        adapter = _adapter(up=up, down=down, alpha=None)
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(adapter)
+        self.assertTrue(torch.allclose(got, up @ down, atol=1e-6))
+
+    def test_numeric_alpha_still_rescales(self):
+        # regression net: a real alpha still divides by rank
+        up = torch.randn(8, 4)
+        down = torch.randn(4, 8)
+        adapter = _adapter(up=up, down=down, alpha=2.0)  # rank 4 -> scale 0.5
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(adapter)
+        self.assertTrue(torch.allclose(got, (up @ down) * 0.5, atol=1e-6))
 
 
 def _chain_patches(*loras):
@@ -1063,6 +1093,30 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
         got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
             applied["patches"][self.KEY])
         # UNscaled weighted sum — identical to the output_strength=1.0 case
+        expected = up_a @ down_a + 0.7 * (up_b @ down_b)
+        self.assertTrue(torch.allclose(got, expected, atol=1e-5),
+                        f"max err {(got - expected).abs().max().item()}")
+
+    def test_none_alpha_captured_adapters_merge_without_crash(self):
+        # End-to-end guard: a chain of PEFT/diffusers LoRAs (alpha=None on the
+        # captured comfy adapters) must merge and re-apply without a
+        # TypeError, treating None alpha as scale 1.0.
+        up_a, down_a = self._det_mats(0.0)
+        up_b, down_b = self._det_mats(0.25)
+        chain = (
+            (1.0, {self.KEY: _adapter(up=up_a, down=down_a, alpha=None)}),
+            (0.7, {self.KEY: _adapter(up=up_b, down=down_b, alpha=None)}),
+        )
+        settings = _advanced_settings(optimization_mode="global",
+                                      merge_strategy_override="weighted_sum")
+        model, applied, calls, out, orig_entries = self._run(
+            chain, settings=settings)
+        self.assertEqual(calls, [])
+        self.assertIn("patches", applied)
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
+            applied["patches"][self.KEY])
+        self.assertTrue(torch.isfinite(got).all())
+        # alpha=None -> scale 1.0, so the exact weighted sum is unchanged
         expected = up_a @ down_a + 0.7 * (up_b @ down_b)
         self.assertTrue(torch.allclose(got, expected, atol=1e-5),
                         f"max err {(got - expected).abs().max().item()}")
