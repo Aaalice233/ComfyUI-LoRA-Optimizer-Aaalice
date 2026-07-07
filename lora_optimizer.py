@@ -423,6 +423,35 @@ _ARCH_TO_PRESET = {
     "qwen_image": "llm",
 }
 
+# comfy model class (type(model.model).__name__) -> this repo's arch name.
+# Used ONLY for inline-captured chains: architecture cannot always be recovered
+# from model-space keys alone (attention-only Qwen-Image and ACE-Step v1.0 both
+# surface as transformer_blocks.N.attn.to_q). The inline node holds the real
+# MODEL object, and comfy assigns each supported architecture a distinct
+# model_base class, so its class name is authoritative. Verified against
+# comfy/model_base.py (BaseModel subclasses). Only base classes are listed —
+# subclasses (WAN22, WAN21_Vace, Flux2, LongCatImage, ZImagePixelSpace, …)
+# resolve through their MRO in _model_class_arch. Unmapped classes -> None ->
+# key-based fallback. Note: Z-Image loads as comfy's Lumina2 / ZImagePixelSpace
+# (there is no separate Z-Image class); both share NextDiT with real Lumina2
+# and resolve to the same 'dit' preset, so mapping Lumina2 -> zimage is safe.
+# SD 1.5 is intentionally omitted: comfy loads it on BaseModel itself, which is
+# every model's base — mapping it would mis-tag everything.
+_MODEL_CLASS_TO_ARCH = {
+    "QwenImage": "qwen_image",
+    "ACEStep": "acestep",
+    "ACEStep15": "acestep",
+    "LTXV": "ltx",
+    "LTXAV": "ltx",
+    "Flux": "flux",
+    "WAN21": "wan",
+    "Lumina2": "zimage",
+    "Ideogram4": "ideogram4",
+    "Anima": "anima",
+    "Krea2": "krea2",
+    "SDXL": "sdxl",
+}
+
 
 def _resolve_arch_preset(arch_override, detected_arch):
     """Resolve architecture preset from override or detected architecture."""
@@ -1027,6 +1056,28 @@ class _LoRAMergeBase:
         if torch.cuda.is_available():
             return torch.device("cuda")
         return torch.device("cpu")
+
+    @staticmethod
+    def _model_class_arch(model):
+        """Authoritative architecture from the comfy MODEL class, for
+        inline-CAPTURED chains only. type(model.model).__name__ (walking the
+        MRO so subclasses resolve via their base) maps to this repo's arch name
+        via _MODEL_CLASS_TO_ARCH. Disambiguates architectures that model-space
+        keys cannot (attention-only Qwen-Image vs ACE-Step v1.0). Returns None
+        for a missing model, a model without an inner .model, or an unmapped
+        class — the caller then falls back to key-based detection. Never raises.
+        """
+        try:
+            inner = getattr(model, "model", None)
+            if inner is None:
+                return None
+            for cls in type(inner).__mro__:
+                arch = _MODEL_CLASS_TO_ARCH.get(cls.__name__)
+                if arch is not None:
+                    return arch
+        except Exception:
+            return None
+        return None
 
     @staticmethod
     def _detect_architecture(lora_sd):
@@ -4498,7 +4549,8 @@ class _LoRAMergeBase:
         return {(k[0] if isinstance(k, tuple) else k): v
                 for k, v in lora_dict.items()}
 
-    def _normalize_stack(self, lora_stack, normalize_keys="disabled"):
+    def _normalize_stack(self, lora_stack, normalize_keys="disabled",
+                         _arch_hint=None):
         """
         Normalize a LoRA stack into a consistent list of dicts.
 
@@ -4611,14 +4663,25 @@ class _LoRAMergeBase:
             # fires when file detection failed — a strict improvement over the
             # old unknown->sd_unet fallthrough for inline chains.
             if arch == "unknown":
-                for item in normalized:
-                    if not item.get("_precomputed_diffs"):
-                        continue
-                    detected = self._detect_architecture(
-                        self._stringify_lora_keys(item["lora"]))
-                    if detected != "unknown":
-                        arch = detected
-                        break
+                has_virtual = any(item.get("_precomputed_diffs")
+                                  for item in normalized)
+                if has_virtual and _arch_hint and _arch_hint != "unknown":
+                    # Model-class detection (from the real MODEL object) is
+                    # authoritative for captured inline chains — it resolves
+                    # architectures that are indistinguishable from model-space
+                    # keys alone (e.g. attention-only Qwen-Image vs ACE-Step
+                    # v1.0, which share transformer_blocks.N.attn.to_q). Guarded
+                    # by has_virtual so FILE-based stacks stay pure key-based.
+                    arch = _arch_hint
+                else:
+                    for item in normalized:
+                        if not item.get("_precomputed_diffs"):
+                            continue
+                        detected = self._detect_architecture(
+                            self._stringify_lora_keys(item["lora"]))
+                        if detected != "unknown":
+                            arch = detected
+                            break
             self._detected_arch = arch if arch != "unknown" else None
 
             # Architecture-aware key normalization (only when enabled)
@@ -7482,7 +7545,13 @@ class LoRAOptimizer(_LoRAMergeBase):
         if merge_formula:
             lora_stack = clean_stack
 
-        normalized_stack = self._normalize_stack(lora_stack, normalize_keys=normalize_keys)
+        # For CAPTURED inline chains, the comfy model class is an authoritative
+        # architecture signal that model-space keys cannot always provide. Pass
+        # it as a hint; _normalize_stack consults it only for virtual items and
+        # only when key-based file detection failed (file stacks unchanged).
+        arch_hint = self._model_class_arch(model)
+        normalized_stack = self._normalize_stack(
+            lora_stack, normalize_keys=normalize_keys, _arch_hint=arch_hint)
         active_loras = [item for item in normalized_stack if item["strength"] != 0]
 
         if len(active_loras) == 0:

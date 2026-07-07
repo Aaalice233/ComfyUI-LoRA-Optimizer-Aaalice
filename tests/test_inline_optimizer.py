@@ -1249,6 +1249,170 @@ class TestVirtualArchDetection(unittest.TestCase):
             lora_optimizer._resolve_arch_preset("auto", "zimage")[0], "dit")
 
 
+# Model-space captured key shared by attention-only Qwen-Image AND ACE-Step
+# v1.0 chains: both surface as transformer_blocks.N.attn.to_q, so key-pattern
+# detection cannot tell them apart (it falls through to the ACE-Step regex).
+_QWEN_ACE_AMBIG_KEY = "diffusion_model.transformer_blocks.0.attn.to_q.weight"
+
+
+class TestModelClassArchDetection(unittest.TestCase):
+    """FIX #12: for CAPTURED inline chains, architecture is resolved from the
+    comfy MODEL class (type(model.model).__name__), which is authoritative and
+    disambiguates architectures that are indistinguishable from model-space
+    keys alone. Fully guarded — never raises."""
+
+    @staticmethod
+    def _model_with(inner):
+        m = _FakePatcher()
+        m.model = inner
+        return m
+
+    def test_qwen_image_class_maps_to_qwen_image(self):
+        class QwenImage:
+            pass
+        self.assertEqual(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(QwenImage())), "qwen_image")
+
+    def test_acestep_class_maps_to_acestep(self):
+        class ACEStep:
+            pass
+        self.assertEqual(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(ACEStep())), "acestep")
+
+    def test_acestep15_class_maps_to_acestep(self):
+        class ACEStep15:
+            pass
+        self.assertEqual(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(ACEStep15())), "acestep")
+
+    def test_ltxv_class_maps_to_ltx(self):
+        class LTXV:
+            pass
+        self.assertEqual(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(LTXV())), "ltx")
+
+    def test_flux_class_maps_to_flux(self):
+        class Flux:
+            pass
+        self.assertEqual(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(Flux())), "flux")
+
+    def test_subclass_resolves_via_mro(self):
+        # comfy has many WAN subclasses (WAN22, WAN21_Vace, …); they must all
+        # resolve to 'wan' via the base class in the MRO.
+        class WAN21:
+            pass
+        class WAN22(WAN21):
+            pass
+        self.assertEqual(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(WAN22())), "wan")
+
+    def test_unknown_class_returns_none(self):
+        class SomeUnsupportedModel:
+            pass
+        self.assertIsNone(
+            lora_optimizer._LoRAMergeBase._model_class_arch(
+                self._model_with(SomeUnsupportedModel())))
+
+    def test_none_model_returns_none(self):
+        self.assertIsNone(lora_optimizer._LoRAMergeBase._model_class_arch(None))
+
+    def test_model_without_inner_model_returns_none(self):
+        # _FakePatcher has no .model attribute -> None, no raise.
+        self.assertIsNone(
+            lora_optimizer._LoRAMergeBase._model_class_arch(_FakePatcher()))
+
+
+class TestArchHintDisambiguation(unittest.TestCase):
+    """FIX #12: attention-only Qwen-Image and ACE-Step v1.0 captured chains are
+    INDISTINGUISHABLE from their model-space keys. The _arch_hint (derived from
+    the model class) disambiguates them for the VIRTUAL path only; file-based
+    stacks keep pure key-based detection."""
+
+    def _virtual_stack(self, model_key):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {model_key: _adapter()})))
+        return lora_optimizer.LoRAOptimizerInline._chain_groups_to_stack(
+            mg, [], [_slot()], "simple")
+
+    def test_ambiguous_key_misdetects_as_acestep_without_hint(self):
+        # Documents the bug: keys alone resolve to ACE-Step (-> acestep_dit),
+        # even when this is really an attention-only Qwen-Image chain.
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack(self._virtual_stack(_QWEN_ACE_AMBIG_KEY))
+        self.assertEqual(node._detected_arch, "acestep")
+
+    def test_qwen_hint_overrides_ambiguous_keys(self):
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack(self._virtual_stack(_QWEN_ACE_AMBIG_KEY),
+                              _arch_hint="qwen_image")
+        self.assertEqual(node._detected_arch, "qwen_image")
+        # The whole point: qwen_image -> 'llm' preset, NOT 'acestep_dit'.
+        self.assertEqual(
+            lora_optimizer._resolve_arch_preset("auto", node._detected_arch)[0],
+            "llm")
+
+    def test_acestep_hint_keeps_acestep(self):
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack(self._virtual_stack(_QWEN_ACE_AMBIG_KEY),
+                              _arch_hint="acestep")
+        self.assertEqual(node._detected_arch, "acestep")
+
+    def test_unknown_hint_falls_back_to_key_based(self):
+        # A None/"unknown" hint must never override key-based virtual detection.
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack(self._virtual_stack(_LTX_KEY), _arch_hint="unknown")
+        self.assertEqual(node._detected_arch, "ltx")
+
+    def test_hint_not_consulted_for_file_based_stack(self):
+        # Regression: a file-based (non-virtual) stack keeps pure key-based
+        # detection even when a hint is present — the hint is captured-only.
+        file_item = {
+            "name": "sdxl_style.safetensors",
+            "lora": {"lora_te1_text_model_encoder_layers_0_self_attn_q_proj"
+                     ".lora_up.weight": torch.zeros(4, 4)},
+            "strength": 1.0,
+        }
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._normalize_stack([file_item], _arch_hint="qwen_image")
+        self.assertEqual(node._detected_arch, "sdxl")   # hint ignored for files
+
+    def test_optimize_merge_resolves_llm_for_captured_qwen_via_model_class(self):
+        # End-to-end: optimize_merge computes the arch hint from the MODEL class
+        # and threads it into _normalize_stack, so an ambiguous captured Qwen
+        # chain resolves to the 'llm' preset, NOT 'acestep_dit'. A spy on
+        # _resolve_arch_preset captures the resolved preset then short-circuits
+        # the (irrelevant) heavy merge.
+        class QwenImage:
+            pass
+        model = _FakePatcher()
+        model.model = QwenImage()
+        node = lora_optimizer.LoRAOptimizerInline()
+        stack = self._virtual_stack(_QWEN_ACE_AMBIG_KEY)
+
+        class _StopMerge(Exception):
+            pass
+        captured = {}
+        real = lora_optimizer._resolve_arch_preset
+
+        def _spy(override, detected):
+            captured["result"] = real(override, detected)
+            raise _StopMerge()
+
+        with mock.patch.object(lora_optimizer, "_resolve_arch_preset", _spy):
+            with self.assertRaises(_StopMerge):
+                node.optimize_merge(model, stack, 1.0)
+        self.assertEqual(node._detected_arch, "qwen_image")
+        self.assertEqual(captured["result"][0], "llm")
+        self.assertNotEqual(captured["result"][0], "acestep_dit")
+
+
 class TestInlineFingerprintArch(unittest.TestCase):
     """execute_inline must detect the architecture from the captured
     model-space keys and surface it in the fingerprint, instead of always
