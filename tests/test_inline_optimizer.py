@@ -1,4 +1,5 @@
 """Tests for the inline chain-filter optimizer node."""
+import os
 import struct
 import types
 import unittest
@@ -2055,6 +2056,250 @@ class TestLoraNameStampInstaller(unittest.TestCase):
         out = inst.load_lora(m, c, "a.safetensors", 1.0, 1.0)
         self.assertIs(out[0], m)
         self.assertIs(out[1], c)
+
+
+class _AttachModel(_FakePatcher):
+    """ModelPatcher stand-in that also carries a loraopt_chain_names
+    attachment and copies it (shallow) on clone, like the real one."""
+    def __init__(self, patches=None, stamps=None):
+        super().__init__(patches)
+        self._att = {}
+        if stamps is not None:
+            self._att[lora_optimizer.LORAOPT_CHAIN_NAMES_ATTACH] = stamps
+        self.model = types.SimpleNamespace()
+
+    def get_attachment(self, key):
+        return self._att.get(key, None)
+
+    def set_attachments(self, key, val):
+        self._att[key] = val
+
+    def clone(self):
+        n = _AttachModel({k: v[:] for k, v in self.patches.items()})
+        n._att = dict(self._att)
+        return n
+
+
+class _AttachClip:
+    """CLIP stand-in whose stamps + patches live on its .patcher."""
+    def __init__(self, patcher):
+        self.patcher = patcher
+        self.cond_stage_model = types.SimpleNamespace()
+
+    def clone(self):
+        return _AttachClip(self.patcher.clone())
+
+
+class TestInlineStampMatcher(unittest.TestCase):
+    """Commit 2: _resolve_stamp_names aligns stamped filenames to chain groups
+    by ORDER and STRENGTH (per branch)."""
+
+    @staticmethod
+    def _m(groups, stamps, field):
+        return lora_optimizer.LoRAOptimizerInline._resolve_stamp_names(
+            groups, stamps, field)
+
+    def test_matches_two_groups_by_strength_model(self):
+        groups = [{"strength": 0.8, "entries": {}}, {"strength": 0.5, "entries": {}}]
+        stamps = [{"name": "a", "strength_model": 0.8, "strength_clip": 0.3},
+                  {"name": "b", "strength_model": 0.5, "strength_clip": 0.4}]
+        self.assertEqual(self._m(groups, stamps, "strength_model"), ["a", "b"])
+
+    def test_matches_by_clip_strength_field(self):
+        groups = [{"strength": 0.6, "entries": {}}]
+        stamps = [{"name": "te", "strength_model": 0.0, "strength_clip": 0.6}]
+        self.assertEqual(self._m(groups, stamps, "strength_clip"), ["te"])
+
+    def test_strength_mismatch_leaves_group_unnamed(self):
+        groups = [{"strength": 0.9, "entries": {}}]
+        stamps = [{"name": "a", "strength_model": 0.2, "strength_clip": 1.0}]
+        self.assertEqual(self._m(groups, stamps, "strength_model"), [None])
+
+    def test_fewer_stamps_than_groups_degrades(self):
+        groups = [{"strength": 0.8, "entries": {}}, {"strength": 0.5, "entries": {}}]
+        stamps = [{"name": "a", "strength_model": 0.8, "strength_clip": 1.0}]
+        self.assertEqual(self._m(groups, stamps, "strength_model"), ["a", None])
+
+    def test_empty_stamps_all_unnamed(self):
+        groups = [{"strength": 0.8, "entries": {}}]
+        self.assertEqual(self._m(groups, [], "strength_model"), [None])
+
+    def test_malformed_stamp_entry_skipped(self):
+        groups = [{"strength": 0.8, "entries": {}}]
+        self.assertEqual(self._m(groups, ["not a dict"], "strength_model"), [None])
+
+
+class TestInlineStampReadPath(unittest.TestCase):
+    """Commit 2: execute_inline consumes stamped filenames -> real names in the
+    fingerprint + file identity on the virtual items (reconciling with the
+    file-based Stack community/memory dataset). Unstamped -> captured fallback."""
+
+    def _node(self):
+        return lora_optimizer.LoRAOptimizerInline()
+
+    @staticmethod
+    def _out(result):
+        return result["result"] if isinstance(result, dict) else result
+
+    def _capture_merge(self, node, seen):
+        def fake_merge(m, stack, output_strength, **kw):
+            seen["model"] = m
+            seen["stack"] = stack
+            seen.update(kw)
+            return (m, kw.get("clip"), "engine report", None, None)
+        node.optimize_merge = fake_merge
+
+    @staticmethod
+    def _resolves(kind, name):
+        return "/loras/" + name
+
+    def test_two_stamps_named_and_get_file_identity(self):
+        patches = _chain_patches((0.8, {"a": _adapter()}), (0.5, {"b": _adapter()}))
+        stamps = [{"name": "styles/a.safetensors", "strength_model": 0.8,
+                   "strength_clip": 0.7},
+                  {"name": "chars/b.safetensors", "strength_model": 0.5,
+                   "strength_clip": 0.5}]
+        model = _AttachModel(patches, stamps)
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=self._resolves):
+            result = node.execute_inline(model, output_strength=1.0)
+        report = self._out(result)[2]
+        # Real names surface in the fingerprint.
+        self.assertIn("styles/a.safetensors", report)
+        self.assertIn("chars/b.safetensors", report)
+        stack = seen["stack"]
+        self.assertEqual(stack[0]["_resolved_file_name"], "styles/a.safetensors")
+        self.assertEqual(stack[1]["_resolved_file_name"], "chars/b.safetensors")
+        # Salted display/merge-cache name is kept SEPARATE from the identity.
+        self.assertTrue(stack[0]["name"].startswith("chain lora #1"))
+        # Persistent identity is the FILE key (reconciles with Stack), not captured:.
+        k0 = lora_optimizer.LoRAAutoTuner._persistent_lora_key(stack[0])
+        self.assertEqual(k0, "styles/a.safetensors")
+        self.assertFalse(k0.startswith("captured:"))
+
+    def test_fewer_stamps_than_groups_leaves_extra_unnamed(self):
+        patches = _chain_patches((0.8, {"a": _adapter()}), (0.5, {"b": _adapter()}))
+        stamps = [{"name": "only/first.safetensors", "strength_model": 0.8,
+                   "strength_clip": 1.0}]
+        model = _AttachModel(patches, stamps)
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=self._resolves):
+            node.execute_inline(model, output_strength=1.0)
+        stack = seen["stack"]
+        self.assertEqual(stack[0]["_resolved_file_name"], "only/first.safetensors")
+        self.assertNotIn("_resolved_file_name", stack[1])   # unmatched -> unnamed
+
+    def test_strength_mismatch_group_stays_unnamed(self):
+        patches = _chain_patches((0.8, {"a": _adapter()}))
+        stamps = [{"name": "wrong.safetensors", "strength_model": 0.2,
+                   "strength_clip": 1.0}]
+        model = _AttachModel(patches, stamps)
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=self._resolves):
+            result = node.execute_inline(model, output_strength=1.0)
+        report = self._out(result)[2]
+        self.assertNotIn("wrong.safetensors", report)
+        self.assertNotIn("_resolved_file_name", seen["stack"][0])
+
+    def test_clip_only_leftover_group_gets_clip_name(self):
+        # TE-only LoRA: no model group, one clip group named by its clip stamp.
+        model = _AttachModel({}, [])
+        clip = _AttachClip(_AttachModel(
+            _chain_patches((0.6, {"te.a": _adapter()})),
+            [{"name": "te/style.safetensors", "strength_model": 0.0,
+              "strength_clip": 0.6}]))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=self._resolves):
+            result = node.execute_inline(model, output_strength=1.0, clip=clip)
+        report = self._out(result)[2]
+        self.assertIn("te/style.safetensors", report)
+        self.assertEqual(seen["stack"][0]["_resolved_file_name"],
+                         "te/style.safetensors")
+
+    def test_no_attachment_keeps_generic_names_and_captured_identity(self):
+        # Regression: unstamped loader (fake patcher lacks the attachment API)
+        # -> generic "chain lora #N" name + captured: content-hash identity.
+        patches = _chain_patches((0.8, {"a": _adapter()}))
+        model = _FakePatcher(patches)
+        model.model = types.SimpleNamespace()
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            result = node.execute_inline(model, output_strength=1.0)
+            report = self._out(result)[2]
+            self.assertIn("#1: 1 keys", report)      # generic fingerprint line
+            stack = seen["stack"]
+            self.assertNotIn("_resolved_file_name", stack[0])
+            self.assertTrue(stack[0]["name"].startswith("chain lora #1"))
+            # captured identity requires get_full_path -> None (in-memory hash)
+            key = lora_optimizer.LoRAAutoTuner._persistent_lora_key(stack[0])
+        self.assertTrue(key.startswith("captured:"))
+
+
+class TestInlineNamedReconciliation(unittest.TestCase):
+    """Commit 2: a NAMED inline item shares the memory/community identity with
+    a Stack run of the same file (file-bytes content hash + name key)."""
+
+    def test_persistent_key_equals_stack_key(self):
+        real = "styles/a.safetensors"
+        named = {"name": "chain lora #1 [zzz]", "_precomputed_diffs": True,
+                 "_resolved_file_name": real, "strength": 0.8, "lora": {}}
+        stack_item = {"name": real, "strength": 0.8, "lora": {}}
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=lambda kind, name: "/loras/" + name):
+            k_named = lora_optimizer.LoRAAutoTuner._persistent_lora_key(named)
+            k_stack = lora_optimizer.LoRAAutoTuner._persistent_lora_key(stack_item)
+        self.assertEqual(k_named, k_stack)
+        self.assertEqual(k_named, real)
+
+    def test_content_hash_equals_stack_file_hash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as memdir:
+            path = os.path.join(memdir, "a.safetensors")
+            with open(path, "wb") as f:
+                f.write(b"fake lora file bytes " * 64)
+            real = "styles/a.safetensors"
+            named = {"name": "chain lora #1 [q]", "_precomputed_diffs": True,
+                     "_resolved_file_name": real, "strength": 0.8,
+                     "lora": {"k": _adapter()}}
+            stack_item = {"name": real, "strength": 0.8, "lora": {}}
+            with mock.patch("lora_optimizer.AUTOTUNER_MEMORY_DIR", memdir), \
+                    mock.patch.object(lora_optimizer.folder_paths,
+                                      "get_full_path",
+                                      side_effect=lambda kind, name: path):
+                h_named = lora_optimizer.LoRAAutoTuner._lora_content_hash(named)
+                h_stack = lora_optimizer.LoRAAutoTuner._lora_content_hash(
+                    stack_item)
+            # Named inline item hashes the FILE bytes (via _resolved_file_name),
+            # so it reconciles with the Stack path's file-bytes hash.
+            self.assertIsNotNone(h_named)
+            self.assertEqual(h_named, h_stack)
+
+    def test_unnamed_captured_still_hashes_in_memory(self):
+        # Regression: an item WITHOUT _resolved_file_name keeps the captured
+        # in-memory content hash (unchanged fallback).
+        item = {"name": "chain lora #1 [s]", "_precomputed_diffs": True,
+                "strength": 0.8, "lora": {"k": _adapter()}}
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               return_value=None):
+            h = lora_optimizer.LoRAAutoTuner._lora_content_hash(item)
+            key = lora_optimizer.LoRAAutoTuner._persistent_lora_key(item)
+        self.assertIsNotNone(h)
+        self.assertTrue(key.startswith("captured:"))
 
 
 if __name__ == "__main__":

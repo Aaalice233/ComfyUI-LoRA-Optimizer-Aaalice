@@ -9661,8 +9661,46 @@ class LoRAOptimizerInline(LoRAOptimizer):
                    "result. Slot #1 = first loader in the chain.")
 
     @staticmethod
+    def _read_chain_stamps(obj):
+        """Read the ordered loraopt_chain_names attachment (real LoRA filenames
+        + strengths, stamped by stock/rgthree loaders) off `obj` — a
+        ModelPatcher or a CLIP wrapper (stamps live on clip.patcher). Returns
+        an ordered list of ``{name, strength_model, strength_clip}`` dicts, or
+        [] when the object is unstamped / doesn't support attachments."""
+        tgt = _loraopt_attachable(obj)
+        if tgt is None:
+            return []
+        try:
+            stamps = tgt.get_attachment(LORAOPT_CHAIN_NAMES_ATTACH)
+        except Exception:
+            return []
+        return list(stamps) if isinstance(stamps, (list, tuple)) else []
+
+    @staticmethod
+    def _resolve_stamp_names(groups, stamps, strength_field, tol=1e-4):
+        """Align stamped filenames to reconstructed chain groups by ORDER and
+        STRENGTH. Positional (both are chain-ordered), verified against the
+        stamp's ``strength_field`` (``strength_model`` for the model branch,
+        ``strength_clip`` for the clip branch). Returns a list the length of
+        `groups`, each entry the resolved filename or None (ambiguous / no
+        matching stamp -> unnamed, best-effort degrade)."""
+        names = [None] * len(groups)
+        for i, g in enumerate(groups):
+            if i >= len(stamps):
+                break
+            entry = stamps[i]
+            try:
+                nm = entry.get("name")
+                s = float(entry.get(strength_field))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if nm and abs(float(g["strength"]) - s) <= tol:
+                names[i] = nm
+        return names
+
+    @staticmethod
     def _chain_groups_to_stack(model_groups, clip_groups, slots, visibility,
-                               name_salt=""):
+                               name_salt="", model_names=None, clip_names=None):
         """
         Build virtual stack items (the _model_to_virtual_lora schema) from
         ordered chain groups.  Model and clip groups pair by chain order:
@@ -9723,7 +9761,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 # would merge at zero anyway); clip_strength stays 0.0 as the
                 # honest record of the user's choice.
                 strength = model_val
-            items.append({
+            item = {
                 "name": f"chain lora #{i + 1}{name_salt}",
                 "lora": lora_dict,
                 "_precomputed_diffs": True,
@@ -9733,7 +9771,19 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 "key_filter": opts.get("key_filter", defaults["key_filter"]),
                 "preserve": bool(opts.get("preserve", defaults["preserve"])),
                 "metadata": {},
-            })
+            }
+            # Real filename recovered from a loader stamp -> file identity
+            # (persistent key + community content hash reconcile with Stack).
+            # Prefer the model-branch name; the paired clip branch is the same
+            # loader/file, so it's a safe fallback for a model-zeroed item.
+            resolved = None
+            if model_names and i < len(model_names):
+                resolved = model_names[i]
+            if not resolved and clip_names and i < len(clip_names):
+                resolved = clip_names[i]
+            if resolved:
+                item["_resolved_file_name"] = resolved
+            items.append(item)
         # Clip-only leftovers: loader calls that only patched the CLIP branch
         for j in range(len(model_groups), len(clip_groups)):
             opts = slots[j] if j < len(slots) else defaults
@@ -9746,7 +9796,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
             clip_val = clip_groups[j]["strength"] * clip_mult
             if clip_val == 0:
                 continue
-            items.append({
+            item = {
                 "name": f"chain lora #{j + 1} (clip-only){name_salt}",
                 "lora": dict(clip_groups[j]["entries"]),
                 "_precomputed_diffs": True,
@@ -9758,7 +9808,10 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 "key_filter": opts.get("key_filter", defaults["key_filter"]),
                 "preserve": bool(opts.get("preserve", defaults["preserve"])),
                 "metadata": {},
-            })
+            }
+            if clip_names and j < len(clip_names) and clip_names[j]:
+                item["_resolved_file_name"] = clip_names[j]
+            items.append(item)
         return items
 
     def execute_inline(self, model, output_strength, clip=None,
@@ -9808,9 +9861,23 @@ class LoRAOptimizerInline(LoRAOptimizer):
         salt = str(getattr(model, "patches_uuid", ""))[:8]
         if clip_patcher is not None:
             salt += "/" + str(getattr(clip_patcher, "patches_uuid", ""))[:8]
+
+        # Recover real LoRA filenames stamped by stock/rgthree loaders (see
+        # _install_lora_name_stamp) and align them to the reconstructed groups
+        # by chain order + strength. Named groups display real names and carry
+        # file identity so memory/community reconcile with the Stack path;
+        # unstamped groups (custom loaders / no attachment) keep the generic
+        # ``chain lora #N`` display + captured-content-hash identity.
+        model_names = self._resolve_stamp_names(
+            model_groups, self._read_chain_stamps(model), "strength_model")
+        clip_names = self._resolve_stamp_names(
+            clip_groups, self._read_chain_stamps(clip), "strength_clip")
+
         stack = self._chain_groups_to_stack(model_groups, clip_groups, slots,
                                             visibility,
-                                            name_salt=f" [{salt}]")
+                                            name_salt=f" [{salt}]",
+                                            model_names=model_names,
+                                            clip_names=clip_names)
 
         stripped_model = model.clone()
         self._strip_captured_entries(stripped_model, model_groups)
@@ -9891,7 +9958,8 @@ class LoRAOptimizerInline(LoRAOptimizer):
         fingerprint = self._chain_fingerprint(
             model_groups, clip_groups, fp_lora_count, passthrough,
             arch_unknown=(arch_display is None and not preset_pinned),
-            arch_display=arch_display)
+            arch_display=arch_display,
+            model_names=model_names, clip_names=clip_names)
         if autotuner_fallback:
             fingerprint += ("[Inline Optimizer] Unknown settings mode — using "
                             "optimizer defaults.\n\n")
@@ -9957,9 +10025,15 @@ class LoRAOptimizerInline(LoRAOptimizer):
 
     def _chain_fingerprint(self, model_groups, clip_groups, lora_count,
                            passthrough_count=0, arch_unknown=False,
-                           arch_display=None):
+                           arch_display=None, model_names=None, clip_names=None):
         """Human-readable slot → LoRA attribution header, prepended to the
-        engine report so the user can verify chain-order attribution."""
+        engine report so the user can verify chain-order attribution. When a
+        real filename was recovered from a loader stamp (model_names/clip_names),
+        it replaces the generic ``chain lora #N`` label."""
+        def _label(names, idx):
+            if names and idx < len(names) and names[idx]:
+                return f"{names[idx]} — "
+            return ""
         lines = ["[Inline Optimizer] Detected loader chain (slot -> LoRA mapping):"]
         for i, g in enumerate(model_groups):
             ranks = [r for r in (self._payload_rank(p) for p in g["entries"].values())
@@ -9969,10 +10043,12 @@ class LoRAOptimizerInline(LoRAOptimizer):
             if i < len(clip_groups):
                 clip_note = (f", +{len(clip_groups[i]['entries'])} clip keys "
                              f"@ {clip_groups[i]['strength']:.2f}")
-            lines.append(f"  #{i + 1}: {len(g['entries'])} keys, {rank_s}, "
+            lines.append(f"  #{i + 1}: {_label(model_names, i)}{len(g['entries'])} "
+                         f"keys, {rank_s}, "
                          f"loader strength {g['strength']:.2f}{clip_note}")
         for j in range(len(model_groups), len(clip_groups)):
-            lines.append(f"  #{j + 1}: clip-only, {len(clip_groups[j]['entries'])} "
+            lines.append(f"  #{j + 1}: {_label(clip_names, j)}clip-only, "
+                         f"{len(clip_groups[j]['entries'])} "
                          f"clip keys @ {clip_groups[j]['strength']:.2f}")
         if model_groups and clip_groups and len(model_groups) != len(clip_groups):
             lines.append(f"  warning: {len(model_groups)} model-side vs "
@@ -10576,7 +10652,11 @@ class LoRAAutoTuner(LoRAOptimizer):
         a stable content hash instead of disabling the community cache.
         """
         try:
-            name = lora_item["name"]
+            # A captured inline item whose real filename was recovered from the
+            # loader stamp (_resolved_file_name) resolves to the FILE and hashes
+            # its bytes — reconciling with the file-based (Stack) community
+            # dataset. File items and unnamed captures use "name" unchanged.
+            name = lora_item.get("_resolved_file_name") or lora_item["name"]
             path = folder_paths.get_full_path("loras", name)
             if path is None:
                 lora_sd = lora_item.get("lora")
@@ -10663,7 +10743,15 @@ class LoRAAutoTuner(LoRAOptimizer):
         a per-session salted name (``chain lora #N [uuid]``), so they key on
         their CONTENT hash instead — that is what makes inline memory /
         community persist across sessions. Independent of the community_cache
-        gate: memory needs this even when community is disabled."""
+        gate: memory needs this even when community is disabled.
+
+        Inline captures whose real filename was recovered from a stock/rgthree
+        loader stamp (_resolved_file_name) key on that FILE name — exactly like
+        a Stack item — so an inline-named run and a Stack run of the same LoRA
+        share the memory/community key."""
+        resolved = lora_item.get("_resolved_file_name")
+        if resolved:
+            return resolved
         if not lora_item.get("_precomputed_diffs"):
             return lora_item["name"]
         ch = LoRAAutoTuner._memo_content_hash(lora_item)
