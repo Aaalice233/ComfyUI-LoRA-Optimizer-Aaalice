@@ -492,10 +492,29 @@ class TestInlineExecute(unittest.TestCase):
         node = self._node()
         seen = {}
         self._capture_merge(node, seen)
-        node.execute_inline(model, output_strength=1.0, enabled_1=False)
+        node.execute_inline(model, output_strength=1.0,
+                            chain_options={"visibility": "simple",
+                                           "slots": [_slot(enabled=False), _slot()]})
         self.assertEqual(len(seen["stack"]), 1)
         self.assertAlmostEqual(seen["stack"][0]["strength"], 0.5)
         self.assertEqual(seen["model"].patches, {})   # disabled LoRA stripped too
+
+    def test_unconnected_chain_options_merges_all_with_defaults(self):
+        # chain_options unconnected (None): every captured LoRA merges with
+        # default options, and the report shows NO slots-vs-LoRAs note
+        # (merge-all-defaults is not a mismatch).
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"b": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        report = self._out(node.execute_inline(model, output_strength=1.0))[2]
+        self.assertEqual(len(seen["stack"]), 2)               # both merged
+        self.assertAlmostEqual(seen["stack"][0]["strength"], 0.8)  # default mult
+        self.assertAlmostEqual(seen["stack"][1]["strength"], 0.5)
+        self.assertFalse(any(i.get("preserve") for i in seen["stack"]))
+        self.assertNotIn("option slot", report)               # no slots-vs-LoRAs
+        self.assertEqual(seen["normalize_keys"], "disabled")
 
     def test_fingerprint_warns_on_group_count_mismatch(self):
         # 2 model groups vs 1 clip group (both non-empty) -> order-attribution
@@ -539,7 +558,8 @@ class TestInlineExecute(unittest.TestCase):
         node = self._node()
         node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
         report = self._out(node.execute_inline(
-            model, output_strength=1.0, lora_count=1))[2]
+            model, output_strength=1.0,
+            chain_options={"visibility": "simple", "slots": [_slot()]}))[2]
         self.assertIn("2 LoRAs detected but only 1 option slot", report)
         self.assertIn("default options", report)
 
@@ -548,7 +568,9 @@ class TestInlineExecute(unittest.TestCase):
         node = self._node()
         node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
         report = self._out(node.execute_inline(
-            model, output_strength=1.0, lora_count=3))[2]
+            model, output_strength=1.0,
+            chain_options={"visibility": "simple",
+                           "slots": [_slot(), _slot(), _slot()]}))[2]
         self.assertIn("3 option slots but only 1 LoRA", report)
         self.assertIn("extra slots ignored", report)
 
@@ -642,8 +664,10 @@ class TestInlineExecute(unittest.TestCase):
         seen = {}
         self._capture_merge(node, seen)
         node.execute_inline(model, output_strength=1.0, clip=clip,
-                            settings_visibility="advanced",
-                            model_strength_2=0.5, clip_strength_2=2.0)
+                            chain_options={"visibility": "advanced",
+                                           "slots": [_slot(),
+                                                     _slot(model_strength=0.5,
+                                                           clip_strength=2.0)]})
         self.assertEqual(len(seen["stack"]), 2)
         self.assertAlmostEqual(seen["stack"][0]["strength"], 0.8)       # defaults
         self.assertAlmostEqual(seen["stack"][0]["clip_strength"], 0.6)
@@ -686,20 +710,20 @@ class TestInlineExecute(unittest.TestCase):
         cls = lora_optimizer.LoRAOptimizerInline
         it = cls.INPUT_TYPES()
         req, opt = it["required"], it["optional"]
-        # widgets the user types/toggles live in "required" (optional widget
-        # inputs render as sockets in some frontends); JS control widgets
-        # must all be present and required
-        for w in ("model", "settings_visibility", "lora_count",
-                  "output_strength", "clip_strength_multiplier"):
+        # widgets the user types live in "required"
+        for w in ("model", "output_strength", "clip_strength_multiplier"):
             self.assertIn(w, req)
-        for i in (1, cls.MAX_LORAS):
-            for base in ("enabled", "strength", "model_strength",
-                         "clip_strength", "conflict_mode", "key_filter",
-                         "preserve"):
-                self.assertIn(f"{base}_{i}", req)
+        # per-LoRA option widgets moved to LoRAInlineChainOptions — the inline
+        # node no longer carries settings_visibility/lora_count or any slot
+        self.assertNotIn("settings_visibility", req)
+        self.assertNotIn("lora_count", req)
+        for base in ("enabled", "strength", "model_strength", "clip_strength",
+                     "conflict_mode", "key_filter", "preserve"):
+            self.assertNotIn(f"{base}_1", req)
         # genuine node-to-node wires stay optional
         self.assertIn("clip", opt)
         self.assertIn("settings", opt)
+        self.assertIn("chain_options", opt)           # new side-node input
         self.assertEqual(cls.FUNCTION, "execute_inline")
         # inherited from LoRAOptimizer — lora_data keeps SaveMergedLoRA working
         self.assertEqual(cls.RETURN_TYPES,
@@ -708,75 +732,59 @@ class TestInlineExecute(unittest.TestCase):
 
 
 class TestInlineIsChanged(unittest.TestCase):
-    """LoRAOptimizerInline.IS_CHANGED must accept the node's ACTUAL inputs
-    (ComfyUI passes every declared widget; the inherited LoRAOptimizer
-    signature expects lora_stack and would raise -> node re-merges on every
-    queue press) and key on the upstream patcher state + consulted widgets."""
-
-    @staticmethod
-    def _full_widget_kwargs():
-        cls = lora_optimizer.LoRAOptimizerInline
-        kw = {"settings_visibility": "simple", "lora_count": 3,
-              "output_strength": 1.0, "clip_strength_multiplier": 1.0}
-        for i in range(1, cls.MAX_LORAS + 1):
-            kw[f"enabled_{i}"] = True
-            kw[f"strength_{i}"] = 1.0
-            kw[f"model_strength_{i}"] = 1.0
-            kw[f"clip_strength_{i}"] = 1.0
-            kw[f"conflict_mode_{i}"] = "all"
-            kw[f"key_filter_{i}"] = "all"
-            kw[f"preserve_{i}"] = False
-        return kw
+    """LoRAOptimizerInline.IS_CHANGED must accept the node's ACTUAL (now much
+    smaller) inputs — the inherited LoRAOptimizer signature expects lora_stack
+    and would raise -> node re-merges on every queue press — and key on the
+    upstream patcher state + chain_options content + settings."""
 
     def _model(self):
         m = _FakePatcher(_chain_patches((0.8, {"a": _adapter()})))
         m.patches_uuid = uuid.uuid4()
         return m
 
-    def test_accepts_full_widget_set_and_is_stable(self):
+    def test_accepts_actual_inputs_and_is_stable(self):
         cls = lora_optimizer.LoRAOptimizerInline
         model = self._model()
-        kw = self._full_widget_kwargs()
-        first = cls.IS_CHANGED(model, **kw)     # must not raise
-        self.assertEqual(first, cls.IS_CHANGED(model, **kw))
+        first = cls.IS_CHANGED(model, 1.0)      # must not raise
+        self.assertEqual(first, cls.IS_CHANGED(model, 1.0))
 
-    def test_changes_when_consulted_widget_changes(self):
+    def test_changes_when_chain_options_content_changes(self):
         cls = lora_optimizer.LoRAOptimizerInline
         model = self._model()
-        kw = self._full_widget_kwargs()
-        first = cls.IS_CHANGED(model, **kw)
-        changed = dict(kw, enabled_2=False)     # slot 2 <= lora_count=3
-        self.assertNotEqual(first, cls.IS_CHANGED(model, **changed))
-
-    def test_ignores_widgets_beyond_lora_count(self):
-        cls = lora_optimizer.LoRAOptimizerInline
-        model = self._model()
-        kw = self._full_widget_kwargs()
-        first = cls.IS_CHANGED(model, **kw)
-        beyond = dict(kw, strength_9=0.25)      # slot 9 > lora_count=3
-        self.assertEqual(first, cls.IS_CHANGED(model, **beyond))
+        co = {"visibility": "simple", "slots": [_slot()]}
+        first = cls.IS_CHANGED(model, 1.0, chain_options=co)
+        self.assertEqual(first, cls.IS_CHANGED(model, 1.0, chain_options=co))
+        changed = {"visibility": "simple", "slots": [_slot(enabled=False)]}
+        self.assertNotEqual(first,
+                            cls.IS_CHANGED(model, 1.0, chain_options=changed))
 
     def test_changes_when_upstream_chain_changes(self):
         cls = lora_optimizer.LoRAOptimizerInline
         model = self._model()
-        kw = self._full_widget_kwargs()
-        first = cls.IS_CHANGED(model, **kw)
+        first = cls.IS_CHANGED(model, 1.0)
         model.patches_uuid = uuid.uuid4()       # loader chain re-executed
-        self.assertNotEqual(first, cls.IS_CHANGED(model, **kw))
+        self.assertNotEqual(first, cls.IS_CHANGED(model, 1.0))
+
+    def test_changes_with_output_strength_and_clip_multiplier(self):
+        cls = lora_optimizer.LoRAOptimizerInline
+        model = self._model()
+        first = cls.IS_CHANGED(model, 1.0)
+        self.assertNotEqual(first, cls.IS_CHANGED(model, 0.5))
+        self.assertNotEqual(first, cls.IS_CHANGED(
+            model, 1.0, clip_strength_multiplier=0.5))
 
     def test_changes_with_clip_and_settings(self):
         cls = lora_optimizer.LoRAOptimizerInline
         model = self._model()
-        kw = self._full_widget_kwargs()
-        first = cls.IS_CHANGED(model, **kw)
+        first = cls.IS_CHANGED(model, 1.0)
         clip = _FakeCLIP(_FakePatcher(_chain_patches((0.6, {"te.a": _adapter()}))))
         clip.patcher.patches_uuid = uuid.uuid4()
-        with_clip = cls.IS_CHANGED(model, clip=clip, **kw)
+        with_clip = cls.IS_CHANGED(model, 1.0, clip=clip)
         self.assertNotEqual(first, with_clip)
         clip.patcher.patches_uuid = uuid.uuid4()
-        self.assertNotEqual(with_clip, cls.IS_CHANGED(model, clip=clip, **kw))
+        self.assertNotEqual(with_clip, cls.IS_CHANGED(model, 1.0, clip=clip))
         self.assertNotEqual(first, cls.IS_CHANGED(
-            model, settings={"mode": "advanced"}, **kw))
+            model, 1.0, settings={"mode": "advanced"}))
 
 
 def _realistic_load_lora_for_models(calls):
@@ -856,7 +864,10 @@ class TestSingleLoraVirtualPath(unittest.TestCase):
         calls = []
         with mock.patch.object(lora_optimizer.comfy.sd, "load_lora_for_models",
                                _realistic_load_lora_for_models(calls)):
-            node.execute_inline(model, output_strength=1.0, enabled_2=False)
+            node.execute_inline(model, output_strength=1.0,
+                                chain_options={"visibility": "simple",
+                                               "slots": [_slot(),
+                                                         _slot(enabled=False)]})
         self.assertEqual(calls, [])
         self.assertTrue(applied.get("patches"))
 

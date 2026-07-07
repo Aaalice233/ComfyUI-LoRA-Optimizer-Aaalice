@@ -9453,27 +9453,17 @@ class LoRAOptimizerInline(LoRAOptimizer):
 
     @classmethod
     def INPUT_TYPES(cls):
-        # Widget inputs live in "required": optional widget-type inputs render
-        # as input SOCKETS (not editable fields) in some frontends. Only
-        # genuine node-to-node wires (CLIP, OPTIMIZER_SETTINGS) go in
-        # "optional". clip_strength_multiplier is a required widget so the JS
-        # control-widget count stays predictable.
-        inputs = {
+        # Widget inputs the user types live in "required": optional widget-type
+        # inputs render as input SOCKETS (not editable fields) in some
+        # frontends. Genuine node-to-node wires (CLIP, OPTIMIZER_SETTINGS,
+        # LORA_CHAIN_OPTIONS) go in "optional". The per-LoRA option widgets now
+        # live on the LoRAInlineChainOptions side node, fed in via chain_options.
+        return {
             "required": {
                 "model": ("MODEL", {
                     "tooltip": "Model coming out of your regular Load LoRA chain. "
                                "The optimizer reads the LoRA patches on it, merges "
                                "them, and re-applies the result."
-                }),
-                "settings_visibility": (["simple", "advanced"], {
-                    "tooltip": "Simple: one strength multiplier per LoRA. "
-                               "Advanced: separate model/clip multipliers, conflict mode, "
-                               "key filter, and preserve per LoRA."
-                }),
-                "lora_count": ("INT", {
-                    "default": 3, "min": 1, "max": cls.MAX_LORAS, "step": 1,
-                    "tooltip": "How many option slots to show. Slot #1 = first Load LoRA "
-                               "in the chain (closest to the checkpoint)."
                 }),
                 "output_strength": ("FLOAT", {
                     "default": 1.0, "min": -1.0, "max": 10.0, "step": 0.05,
@@ -9497,55 +9487,14 @@ class LoRAOptimizerInline(LoRAOptimizer):
                     "tooltip": "Optimizer Settings node for full control (advanced "
                                "mode). AutoTuner mode is not supported inline."
                 }),
+                "chain_options": ("LORA_CHAIN_OPTIONS", {
+                    "tooltip": "Connect a LoRA Inline Chain Options node to set "
+                               "per-LoRA options (attributed by chain order: slot #1 "
+                               "= first loader). Leave unconnected to merge every "
+                               "captured LoRA with default options."
+                }),
             },
         }
-        for i in range(1, cls.MAX_LORAS + 1):
-            inputs["required"][f"enabled_{i}"] = ("BOOLEAN", {
-                "default": True,
-                "tooltip": f"Off: LoRA #{i} is removed from the model entirely "
-                           f"(not merged, not applied)."
-            })
-            inputs["required"][f"strength_{i}"] = ("FLOAT", {
-                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
-                "tooltip": f"Multiplier on the strength LoRA #{i}'s loader set "
-                           f"(1.0 = keep as loaded)."
-            })
-            inputs["required"][f"model_strength_{i}"] = ("FLOAT", {
-                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
-                "tooltip": f"Multiplier on LoRA #{i}'s loader strength for image "
-                           f"generation (visual style, composition). 1.0 = keep as loaded."
-            })
-            inputs["required"][f"clip_strength_{i}"] = ("FLOAT", {
-                "default": 1.0, "min": -10.0, "max": 10.0, "step": 0.05,
-                "tooltip": f"Multiplier on LoRA #{i}'s loader strength for text "
-                           f"understanding (prompt interpretation). 1.0 = keep as loaded."
-            })
-            inputs["required"][f"conflict_mode_{i}"] = (["all", "low_conflict", "high_conflict"], {
-                "default": "all",
-                "tooltip": f"LoRA #{i} conflict filter. "
-                           f"'all': apply everywhere (default). "
-                           f"'low_conflict': only where this LoRA agrees with the majority. "
-                           f"'high_conflict': only where this LoRA disagrees."
-            })
-            inputs["required"][f"key_filter_{i}"] = (
-                ["all", "shared_only", "unique_only", "audio_only", "no_audio"], {
-                "default": "all",
-                "tooltip": f"LoRA #{i} key filter. "
-                           f"'all': contribute all keys (default). "
-                           f"'shared_only': only keys present in 2+ LoRAs. "
-                           f"'unique_only': only keys present in exactly 1 LoRA. "
-                           f"'audio_only': only audio layers (LTX-2 / ACE-Step). "
-                           f"'no_audio': only non-audio (video) layers."
-            })
-            inputs["required"][f"preserve_{i}"] = ("BOOLEAN", {
-                "default": False,
-                "tooltip": f"Mark LoRA #{i} as a STYLE LoRA to protect it in conflict merges. "
-                           f"When on, it is never trimmed by sparsification and is exempt from "
-                           f"TIES sign-election (which deletes a style's minority-sign direction) "
-                           f"— its full contribution is added on top of the conflict-resolved merge. "
-                           f"Use when a style LoRA keeps disappearing when merged with a content LoRA."
-            })
-        return inputs
 
     # RETURN_TYPES / RETURN_NAMES / CATEGORY inherited from LoRAOptimizer:
     # (MODEL, CLIP, STRING, TUNER_DATA, LORA_DATA) — lora_data keeps
@@ -9658,8 +9607,8 @@ class LoRAOptimizerInline(LoRAOptimizer):
         return items
 
     def execute_inline(self, model, output_strength, clip=None,
-                       clip_strength_multiplier=1.0, settings_visibility="simple",
-                       lora_count=3, settings=None, **slot_kwargs):
+                       clip_strength_multiplier=1.0, settings=None,
+                       chain_options=None):
         model_groups = self._reconstruct_chain_groups(getattr(model, "patches", {}) or {})
         clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
         clip_groups = (self._reconstruct_chain_groups(getattr(clip_patcher, "patches", {}) or {})
@@ -9683,10 +9632,15 @@ class LoRAOptimizerInline(LoRAOptimizer):
                           "Load LoRA nodes. Model passed through unchanged.")
             return (model, clip, report, None, None)
 
-        slots = []
-        for i in range(1, lora_count + 1):
-            slots.append({k: slot_kwargs.get(f"{k}_{i}", d)
-                          for k, d in self._SLOT_DEFAULTS.items()})
+        # Per-LoRA options come from the connected LoRAInlineChainOptions side
+        # node. Unconnected -> merge every captured LoRA with default options
+        # (slots empty; _chain_groups_to_stack applies _SLOT_DEFAULTS per group).
+        if chain_options is not None:
+            visibility = chain_options.get("visibility", "simple")
+            slots = chain_options.get("slots", []) or []
+        else:
+            visibility = "simple"
+            slots = []
 
         # Merge-cache correctness (defense-in-depth): optimize_merge's in-node
         # cache keys on item names + strengths, and virtual names carry no
@@ -9700,7 +9654,7 @@ class LoRAOptimizerInline(LoRAOptimizer):
         if clip_patcher is not None:
             salt += "/" + str(getattr(clip_patcher, "patches_uuid", ""))[:8]
         stack = self._chain_groups_to_stack(model_groups, clip_groups, slots,
-                                            settings_visibility,
+                                            visibility,
                                             name_salt=f" [{salt}]")
 
         stripped_model = model.clone()
@@ -9745,8 +9699,13 @@ class LoRAOptimizerInline(LoRAOptimizer):
             # items don't have — v1 falls back to optimizer defaults.
             autotuner_fallback = True
 
+        # Only surface the "slots vs LoRAs detected" note when an options node
+        # is actually connected. Unconnected -> fp_lora_count == group count,
+        # so no mismatch fires (merge-all-defaults is not a mismatch).
+        fp_lora_count = (len(slots) if chain_options is not None
+                         else max(len(model_groups), len(clip_groups)))
         fingerprint = self._chain_fingerprint(
-            model_groups, clip_groups, lora_count, passthrough,
+            model_groups, clip_groups, fp_lora_count, passthrough,
             # Virtual items skip _normalize_stack's arch detection, so "auto"
             # can never resolve inline — warn unless a preset is pinned.
             arch_unknown=merge_kwargs.get("architecture_preset", "auto") == "auto")
@@ -9832,28 +9791,26 @@ class LoRAOptimizerInline(LoRAOptimizer):
 
     @classmethod
     def IS_CHANGED(cls, model, output_strength, clip=None,
-                   clip_strength_multiplier=1.0, settings_visibility="simple",
-                   lora_count=3, settings=None, **slot_kwargs):
+                   clip_strength_multiplier=1.0, settings=None,
+                   chain_options=None):
         """Execution-cache key for the inline node. The inherited
         LoRAOptimizer.IS_CHANGED expects lora_stack and would raise on this
         node's inputs — ComfyUI then treats the node as always-changed and
-        re-merges on every queue press. Keys on every CONSULTED widget (slots
-        beyond lora_count don't affect the output) plus the model/clip
-        patches_uuid and settings content. Note: under live ComfyUI, linked
-        inputs (model/clip/settings) arrive here as None — upstream changes
-        invalidate through the executor's ancestor cache keys instead; the
-        patches_uuid terms matter for harness/direct callers."""
+        re-merges on every queue press. Keys on the model/clip patches_uuid,
+        output_strength/clip_strength_multiplier, and the chain_options +
+        settings content. Note: chain_options is a linked input (None live) —
+        the options node's widget changes invalidate via the executor's
+        ancestor cache keys; the patches_uuid/chain_options terms matter for
+        harness/direct callers."""
         h = hashlib.sha256()
         h.update(str(getattr(model, "patches_uuid", id(model))).encode())
         clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
         if clip_patcher is not None:
             h.update(f"|clip={getattr(clip_patcher, 'patches_uuid', id(clip))}".encode())
-        h.update(f"|os={output_strength}|csm={clip_strength_multiplier}"
-                 f"|vis={settings_visibility}|n={lora_count}".encode())
-        for i in range(1, int(lora_count) + 1):
-            slot = {k: slot_kwargs.get(f"{k}_{i}", d)
-                    for k, d in cls._SLOT_DEFAULTS.items()}
-            h.update(json.dumps(slot, sort_keys=True, default=str).encode())
+        h.update(f"|os={output_strength}|csm={clip_strength_multiplier}".encode())
+        if chain_options is not None:
+            h.update(json.dumps(chain_options, sort_keys=True,
+                                default=str).encode())
         if settings is not None:
             h.update(json.dumps(settings, sort_keys=True, default=str).encode())
         return h.hexdigest()[:16]
