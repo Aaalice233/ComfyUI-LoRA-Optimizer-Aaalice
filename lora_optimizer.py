@@ -2194,6 +2194,45 @@ class _LoRAMergeBase:
             return None
 
     @staticmethod
+    def _is_plain_additive_payload(payload):
+        """True when ``payload`` can be detached from its ModelPatcher entry
+        and represented as a base-independent additive delta.
+
+        DoRA adapters are base-weight dependent, while a LoRA ``reshape``
+        request pads/replaces the working weight shape before applying the
+        delta.  Neither operation can be preserved by expanding the adapter to
+        a bare diff and re-appending it later.  Keep those payloads on the
+        incoming patcher instead of silently turning them into ordinary LoRA.
+        """
+        if isinstance(payload, tuple):
+            # Only the exact ("diff", (tensor,)) shape is a plain dense delta.
+            return (len(payload) == 2 and payload[0] == "diff"
+                    and isinstance(payload[1], tuple) and len(payload[1]) == 1
+                    and isinstance(payload[1][0], torch.Tensor))
+        if isinstance(payload, list):
+            return False  # nested compositions are order/base dependent
+
+        weights = getattr(payload, "weights", None)
+        if not isinstance(weights, (tuple, list)):
+            return False
+        if isinstance(payload, LoKrAdapter):
+            # Current comfy LoKr schema: (..., t2, dora_scale).
+            return len(weights) in (8, 9) and (len(weights) == 8 or weights[8] is None)
+        if isinstance(payload, LoHaAdapter):
+            # Current comfy LoHa schema: (..., t1, t2, dora_scale).
+            return len(weights) in (7, 8) and (len(weights) == 7 or weights[7] is None)
+        if isinstance(payload, LoRAAdapter):
+            # (up, down, alpha, mid, dora_scale, reshape).  Older comfy
+            # versions may expose a shorter tuple; absent optional fields are
+            # equivalent to None.
+            if not 4 <= len(weights) <= 6:
+                return False
+            dora_scale = weights[4] if len(weights) > 4 else None
+            reshape = weights[5] if len(weights) > 5 else None
+            return dora_scale is None and reshape is None
+        return False
+
+    @staticmethod
     def _is_capturable_entry(entry):
         """True if a ModelPatcher patch entry is a plain additive LoRA-family
         application we can merge: adapter object or ("diff", (tensor,)) payload,
@@ -2205,18 +2244,56 @@ class _LoRAMergeBase:
         strength, payload, strength_model, offset, function = entry
         if function is not None or strength_model != 1.0:
             return False
-        if isinstance(payload, tuple):
-            # only the exact ("diff", (tensor,)) shape expands faithfully:
-            # ("diff", (tensor, {"pad_weight": True})) pads the BASE weight at
-            # apply time, and ("diff", None) is malformed — both pass through
-            return (len(payload) == 2 and payload[0] == "diff"
-                    and isinstance(payload[1], tuple) and len(payload[1]) == 1)
-        if isinstance(payload, list):
-            return False  # comfy list payloads = nested composition, not a plain diff
-        return isinstance(payload, (LoRAAdapter, LoKrAdapter, LoHaAdapter))
+        return _LoRAMergeBase._is_plain_additive_payload(payload)
 
     @staticmethod
-    def _reconstruct_chain_groups(patches):
+    def _is_lora_family_payload(payload):
+        """Best-effort marker for an entry that occupies a loader-chain slot.
+
+        Known adapters and diff payloads are definite LoRA-family entries.
+        Other comfy adapters expose ``weights``; keep them as non-mergeable
+        placeholders so a DoRA/GLora/OFT-like call cannot shift the slot numbers
+        of later ordinary LoRAs. Lists are nested patch compositions and likewise
+        occupy their call's position even though Inline cannot flatten them.
+        """
+        if isinstance(payload, (LoRAAdapter, LoKrAdapter, LoHaAdapter)):
+            return True
+        if hasattr(payload, "weights"):
+            return True
+        if isinstance(payload, tuple):
+            return len(payload) > 0 and payload[0] == "diff"
+        return isinstance(payload, list)
+
+    @staticmethod
+    def _barrier_allows_additive_suffix(entry):
+        """Whether a non-capturable entry is known to preserve target shape.
+
+        A later plain additive patch can stay movable after a shape-preserving
+        barrier (notably DoRA): stripping and re-appending it keeps the same
+        tail position. Reshape/padded/nested/functional/unknown patches may
+        change the working weight shape, while Inline expands against the base
+        model shape, so every later call on that target must remain in place.
+        """
+        if not isinstance(entry, tuple) or len(entry) != 5:
+            return False
+        _strength, payload, _strength_model, _offset, function = entry
+        if function is not None:
+            return False
+        if isinstance(payload, LoKrAdapter):
+            return len(getattr(payload, "weights", ())) in (8, 9)
+        if isinstance(payload, LoHaAdapter):
+            return len(getattr(payload, "weights", ())) in (7, 8)
+        if isinstance(payload, LoRAAdapter):
+            weights = getattr(payload, "weights", ())
+            return (isinstance(weights, (tuple, list))
+                    and 4 <= len(weights) <= 6
+                    and (len(weights) < 6 or weights[5] is None))
+        # A plain dense/additive payload can only be non-capturable here due to
+        # entry metadata such as strength_model; its tensor shape is fixed.
+        return _LoRAMergeBase._is_plain_additive_payload(payload)
+
+    @staticmethod
+    def _reconstruct_chain_groups(patches, include_blocked=False):
         """Reconstruct ordered per-LoRA groups from a ModelPatcher.patches dict.
 
         Grouping: entries from one add_patches call all store the SAME
@@ -2234,40 +2311,96 @@ class _LoRAMergeBase:
         fingerprints so the user can verify slot attribution).
 
         Returns [{"strength": float, "entries": {target_key: payload},
-                  "captured": [(str_key, entry), ...]}, ...]
+                  "captured": [(str_key, entry), ...], "mergeable": bool}, ...]
         where target_key is str_key or (str_key, offset) matching the tuple-key
         convention of comfy.lora.load_lora (entries with a non-None function are
         never capturable, so the 3-tuple form cannot occur here), and "captured"
-        lists the exact entry tuples for later stripping.
+        lists the exact entry tuples for later stripping. By default blocked
+        loader calls are omitted for backward-compatible callers. Inline passes
+        ``include_blocked=True`` so their empty placeholders preserve slot and
+        MODEL/CLIP pairing indices.
         """
+        # The optimized patch is appended at the end of each target's patch
+        # list. A plain additive call is movable only if every one of its entries
+        # can stay after every pass-through/order-dependent entry. This is a
+        # DIRECTED constraint: a blocked call forces earlier calls on its other
+        # targets to stay. Later additive calls remain movable only after a
+        # known shape-preserving barrier; an unknown/shape-changing barrier
+        # seals the suffix on that target too.
         by_id = {}
         order_hint = []
+        blocked_gids = set()
+        predecessors = {}
         seen = {}  # (base_gid, target_key) -> occurrence count (collision ordinal)
+
         for str_key, entry_list in patches.items():
-            pos = 0
-            for entry in entry_list:
-                if not _LoRAMergeBase._is_capturable_entry(entry):
+            prior_gids = set()
+            suffix_shape_blocked = False
+            for pos, entry in enumerate(entry_list):
+                capturable = _LoRAMergeBase._is_capturable_entry(entry)
+                if not isinstance(entry, tuple) or len(entry) != 5:
+                    # Unknown entry shape is an order barrier. Every recognized
+                    # loader call before it on this target must remain in place;
+                    # its shape is unknowable, so later calls stay too.
+                    blocked_gids.update(prior_gids)
+                    suffix_shape_blocked = True
                     continue
-                strength, payload, _sm, offset, _function = entry
+
+                strength, payload, _strength_model, offset, _function = entry
+                if not _LoRAMergeBase._is_lora_family_payload(payload):
+                    if not capturable:
+                        blocked_gids.update(prior_gids)
+                        suffix_shape_blocked = True
+                    continue
+
                 base_gid = id(strength)
                 target_key = str_key if offset is None else (str_key, offset)
-                # interned-float collision repair: the k-th same-gid entry on
-                # a target key belongs to the k-th colliding call, so the
-                # collision ORDINAL — not the absolute per-key position, which
-                # shifts when other loaders interleave — picks the sub-group.
-                # Ordinal 0 stays with the base gid group on every key.
+                try:
+                    hash(target_key)
+                except TypeError:
+                    # Preserve attribution for a malformed third-party offset,
+                    # but never capture it under a fabricated target key.
+                    target_key = (str_key, repr(offset))
+                    capturable = False
+
                 k = seen.get((base_gid, target_key), 0)
                 seen[(base_gid, target_key)] = k + 1
                 gid = base_gid if k == 0 else (base_gid, k)
+
                 if gid not in by_id:
-                    by_id[gid] = {"strength": float(strength), "entries": {},
-                                  "captured": [], "_positions": {}}
+                    by_id[gid] = {
+                        "strength": float(strength),
+                        "entries": {},
+                        "captured": [],
+                        "_all_entries": [],
+                        "_positions": {},
+                        "_gid": gid,
+                    }
                     order_hint.append(gid)
                 group = by_id[gid]
                 group["entries"][target_key] = payload
-                group["captured"].append((str_key, entry))
-                group["_positions"][str_key] = pos
-                pos += 1
+                group["_all_entries"].append((str_key, entry))
+                group["_positions"].setdefault(str_key, pos)
+
+                predecessors.setdefault(gid, set()).update(prior_gids - {gid})
+                prior_gids.add(gid)
+                if suffix_shape_blocked:
+                    blocked_gids.add(gid)
+                if not capturable:
+                    blocked_gids.add(gid)
+                    if not _LoRAMergeBase._barrier_allows_additive_suffix(entry):
+                        suffix_shape_blocked = True
+
+        # If a call is blocked on one target, every earlier call on each other
+        # target it touches must also remain. Walk that predecessor relation to
+        # a fixed point. Calls after the barrier are deliberately not included.
+        pending = list(blocked_gids)
+        while pending:
+            gid = pending.pop()
+            for earlier_gid in predecessors.get(gid, ()):
+                if earlier_gid not in blocked_gids:
+                    blocked_gids.add(earlier_gid)
+                    pending.append(earlier_gid)
 
         groups = [by_id[g] for g in order_hint]
 
@@ -2287,15 +2420,23 @@ class _LoRAMergeBase:
                     break
             ordered.insert(idx, g)
 
+        result = []
         for g in ordered:
+            gid = g.pop("_gid")
+            mergeable = gid not in blocked_gids
+            g["mergeable"] = mergeable
+            g["captured"] = g.pop("_all_entries") if mergeable else []
             g.pop("_positions", None)
-        return ordered
+            if include_blocked or mergeable:
+                result.append(g)
+        return result
 
     @staticmethod
     def _strip_captured_entries(patcher, groups):
         """Remove every captured entry from patcher.patches, in place, keeping
-        non-LoRA entries. clone() copies the per-key lists but shares the entry
-        tuples, so identity matching against the captured entries is safe."""
+        non-mergeable/order-blocked entries. clone() copies the per-key lists
+        but shares the entry tuples, so identity matching against the captured
+        entries is safe."""
         captured_ids = {id(entry) for g in groups for (_k, entry) in g["captured"]}
         new_patches = {}
         for key, entry_list in patcher.patches.items():
@@ -2550,6 +2691,7 @@ class _LoRAMergeBase:
         use_gpu = device is not None and device.type != "cpu"
         aggregated = {}
         ranks = {}
+        rank_bounds_known = {}
         raw_contributors = set()
         storage_dtype = None
         skip_count = 0
@@ -2566,6 +2708,7 @@ class _LoRAMergeBase:
         for i, item in enumerate(active_loras):
             diff_accum = None
             rank_sum = 0
+            rank_bound_known = True
 
             # Virtual LoRAs from sub-merges store pre-computed diffs keyed by target key
             if item.get("_precomputed_diffs"):
@@ -2604,18 +2747,46 @@ class _LoRAMergeBase:
                         # Genuine dense sub-merge diffs (bare tensor / ("diff",
                         # …)) and LoKr return None -> += 1 (rank unknown).
                         _pr = self._payload_rank(raw)
-                        rank_sum += _pr if isinstance(_pr, int) and _pr > 0 else 1
+                        _weights = getattr(raw, "weights", ())
+                        if (isinstance(_pr, int) and _pr > 0
+                                and isinstance(raw, LoRAAdapter)
+                                and not isinstance(raw, (LoKrAdapter, LoHaAdapter))
+                                and self._is_plain_additive_payload(raw)
+                                and len(target_shape) == 2
+                                and len(_weights) >= 4
+                                and _weights[3] is None
+                                and isinstance(_weights[0], torch.Tensor)
+                                and isinstance(_weights[1], torch.Tensor)
+                                and _weights[0].dim() == 2
+                                and _weights[1].dim() == 2):
+                            rank_sum += _pr
+                        else:
+                            # Dense, LoKr and LoHa payloads do not expose a
+                            # reliable matrix-rank upper bound. Keep rank=1 for
+                            # analysis compatibility, but mark the compression
+                            # budget unknown so "smart" never truncates them.
+                            rank_sum += 1
+                            rank_bound_known = False
                         if storage_dtype is None:
                             storage_dtype = raw.dtype if isinstance(raw, torch.Tensor) else diff.dtype
                         diff_accum = diff
                 if diff_accum is not None:
                     aggregated[i] = diff_accum
                     ranks[i] = rank_sum
+                    rank_bounds_known[i] = rank_bound_known
                 continue
 
             for alias in target_group["aliases"]:
                 cache_key = (alias, i)
                 lora_info = self._get_lora_key_info(item["lora"], alias)
+                linear_rank_bound = False
+                if lora_info is not None:
+                    _up, _down, _alpha, _mid = lora_info
+                    linear_rank_bound = (
+                        _mid is None and len(target_shape) == 2
+                        and isinstance(_up, torch.Tensor)
+                        and isinstance(_down, torch.Tensor)
+                        and _up.dim() == 2 and _down.dim() == 2)
 
                 # Recompute low-rank diffs instead of caching them. When the
                 # factors are smaller than the dense diff (r*(out+in) < out*in —
@@ -2641,13 +2812,21 @@ class _LoRAMergeBase:
                     if diff is not None:
                         diff = diff.float()
                         raw_contributors.add(i)
-                        rank_sum += 1  # rank unknown from cache
+                        if lora_info is not None:
+                            rank_sum += int(lora_info[1].shape[0])
+                            if not linear_rank_bound:
+                                rank_bound_known = False
+                        else:
+                            rank_sum += 1
+                            rank_bound_known = False
                         diff_accum = diff if diff_accum is None else diff_accum + diff
                     continue
 
                 if lora_info is not None:
                     mat_up, mat_down, alpha, mid = lora_info
                     rank_sum += mat_down.shape[0]
+                    if not linear_rank_bound:
+                        rank_bound_known = False
                     raw_contributors.add(i)
                     if storage_dtype is None:
                         storage_dtype = mat_up.dtype
@@ -2693,6 +2872,10 @@ class _LoRAMergeBase:
                         diff = reshaped
                         if diff is not None:
                             rank_sum += alt_rank
+                            # The reported LoKr/LoHa rank is useful for
+                            # analysis, but is not an upper bound on the rank of
+                            # the reconstructed Kronecker/Hadamard product.
+                            rank_bound_known = False
                             raw_contributors.add(i)
                             if storage_dtype is None:
                                 storage_dtype = alt_dtype
@@ -2721,6 +2904,7 @@ class _LoRAMergeBase:
                                 diff_accum = diff_accum * sc
                 aggregated[i] = diff_accum
                 ranks[i] = rank_sum
+                rank_bounds_known[i] = rank_bound_known
             elif i in raw_contributors:
                 pass  # contributed via cache but diff_accum ended up None (shouldn't happen)
             else:
@@ -2737,6 +2921,7 @@ class _LoRAMergeBase:
                     "diffs": {},
                     "eff_strengths": {},
                     "rank_sums": {},
+                    "rank_bound": None,
                     "target_shape": target_shape,
                     "storage_dtype": storage_dtype,
                     "skip_count": skip_count,
@@ -2746,6 +2931,7 @@ class _LoRAMergeBase:
         filtered = {}
         eff_strengths = {}
         rank_sums = {}
+        filtered_rank_bounds_known = {}
         is_audio_group = self._target_is_audio(target_group)
         for i, diff in aggregated.items():
             kf = active_loras[i].get("key_filter", "all")
@@ -2762,6 +2948,7 @@ class _LoRAMergeBase:
                 active_loras[i], is_clip
             ) * auto_scale
             rank_sums[i] = ranks.get(i, 0)
+            filtered_rank_bounds_known[i] = rank_bounds_known.get(i, False)
 
         if not filtered:
             return {
@@ -2772,6 +2959,7 @@ class _LoRAMergeBase:
                 "diffs": {},
                 "eff_strengths": {},
                 "rank_sums": {},
+                "rank_bound": None,
                 "target_shape": target_shape,
                 "storage_dtype": storage_dtype,
                 "skip_count": skip_count,
@@ -2781,6 +2969,10 @@ class _LoRAMergeBase:
             filtered, eff_strengths, active_loras, merge_refinement=merge_refinement
         )
 
+        rank_bound = None
+        if all(filtered_rank_bounds_known.values()):
+            rank_bound = sum(rank_sums.values())
+
         return {
             "label_prefix": target_group["label_prefix"],
             "target_key": target_key,
@@ -2789,6 +2981,7 @@ class _LoRAMergeBase:
             "diffs": filtered,
             "eff_strengths": eff_strengths,
             "rank_sums": rank_sums,
+            "rank_bound": rank_bound,
             "target_shape": target_shape,
             "storage_dtype": storage_dtype,
             "skip_count": skip_count,
@@ -3449,9 +3642,14 @@ class _LoRAMergeBase:
     @staticmethod
     def _expand_patch_to_diff(patch):
         """Expand a patch (diff tuple, LoRAAdapter, LoKrAdapter, LoHaAdapter) to a float32 diff tensor."""
-        if isinstance(patch, tuple) and patch[0] == "diff":
-            return patch[1][0].float()
-        elif isinstance(patch, LoKrAdapter):
+        if isinstance(patch, tuple):
+            if _LoRAMergeBase._is_plain_additive_payload(patch):
+                return patch[1][0].float()
+            raise ValueError("Cannot expand an order-dependent or malformed tuple patch as a plain diff")
+        if (isinstance(patch, (LoRAAdapter, LoKrAdapter, LoHaAdapter))
+                and not _LoRAMergeBase._is_plain_additive_payload(patch)):
+            raise ValueError("Cannot expand a base-dependent DoRA/reshape adapter as a plain diff")
+        if isinstance(patch, LoKrAdapter):
             weights = patch.weights
             w1, w2, alpha = weights[0], weights[1], weights[2]
             w1_a, w1_b = weights[3], weights[4]
@@ -3501,7 +3699,7 @@ class _LoRAMergeBase:
                 m2 = torch.mm(w2a.float(), w2b.float())
             scale = alpha / rank if alpha is not None else 1.0
             return (m1 * m2) * scale
-        elif hasattr(patch, 'weights'):
+        elif isinstance(patch, LoRAAdapter):
             w = patch.weights
             mat_up, mat_down, alpha = w[0], w[1], w[2]
             mid = w[3]
@@ -4635,7 +4833,7 @@ class _LoRAMergeBase:
                 if "lora" not in entry or "strength" not in entry or "name" not in entry:
                     logging.warning("[LoRA Optimizer] Skipping malformed dict entry (expected keys: name, lora, strength)")
                     continue
-                normalized.append({
+                normalized_item = {
                     "name": entry["name"],
                     "lora": entry["lora"],
                     "strength": entry["strength"],
@@ -4645,7 +4843,15 @@ class _LoRAMergeBase:
                     "preserve": bool(entry.get("preserve", False)),
                     "metadata": entry.get("metadata", {}),
                     "_precomputed_diffs": entry.get("_precomputed_diffs", False),
-                })
+                }
+                # Inline/AutoTuner identity must survive normalization. A
+                # resolved loader filename reconciles captured runs with the
+                # file-based cache; the memoized hash avoids re-hashing large
+                # captured factor dictionaries for every tuner candidate.
+                for identity_key in ("_resolved_file_name", "_content_hash"):
+                    if identity_key in entry:
+                        normalized_item[identity_key] = entry[identity_key]
+                normalized.append(normalized_item)
 
             else:
                 logging.warning("[LoRA Optimizer] Skipping unrecognized stack entry")
@@ -6746,7 +6952,8 @@ class LoRAOptimizer(_LoRAMergeBase):
         (within float tol) of the dense expand. LoKr/LoHa/dense-tensor/
         ("diff",…)/mid!=None/non-2D payloads return False and keep their group
         on the dense _prepare_group_diffs path."""
-        if not isinstance(payload, LoRAAdapter):
+        if (not isinstance(payload, LoRAAdapter)
+                or not _LoRAMergeBase._is_plain_additive_payload(payload)):
             return False
         # LoKr/LoHa are sibling classes, not LoRAAdapter subclasses; be explicit
         # in case a future comfy makes them subclass a shared base.
@@ -6899,13 +7106,19 @@ class LoRAOptimizer(_LoRAMergeBase):
         up_parts = []
         down_parts = []
         total_rank = 0
+        factor_device = pieces[0][1].device
         for lora_idx, mat_up, mat_down, alpha in pieces:
             weight = per_lora_scales[lora_idx]
             rank = mat_down.shape[0]
             total_rank += rank
             piece_scale = weight * (alpha / rank)
-            up_parts.append(mat_up * piece_scale)
-            down_parts.append(mat_down)
+            # Comfy expands LoRA factors in float32 and only then applies the
+            # patch strength. Scaling fp16/bf16 factors in their storage dtype
+            # first introduces visible rounding (and float8 can fail outright).
+            # Fuse in float32 to mirror the ordinary loader path.
+            up_parts.append(mat_up.to(device=factor_device, dtype=torch.float32)
+                            * piece_scale)
+            down_parts.append(mat_down.to(device=factor_device, dtype=torch.float32))
 
         if total_rank <= 0:
             return None
@@ -8449,10 +8662,25 @@ class LoRAOptimizer(_LoRAMergeBase):
             diffs_list.clear()  # Free input diffs from GPU
             if merged_diff is None:
                 return None
-            # Compress full-rank diff to low-rank via SVD if requested
-            # non_ties: skip compression on TIES prefixes (lossy); all: compress everything
+            # "smart" compression is only allowed when the result has a known
+            # rank upper bound that fits the budget and no rank-increasing mask
+            # or refinement was applied. Dense captured diffs and LoKr/LoHa do
+            # not provide such a bound; truncating them at the global rank-64
+            # floor was a major additive-inline quality regression. "aggressive"
+            # remains the explicit opt-in to lossy truncation.
+            rank_bound = prepared.get("rank_bound")
+            smart_compression_safe = (
+                isinstance(rank_bound, int)
+                and rank_bound <= compress_rank
+                and pf_mode in ("weighted_sum", "weighted_average", "normalize", "slerp")
+                and sparsification == "disabled"
+                and merge_refinement == "none"
+                and not stack_has_conflict_modes
+                and star_eta >= 100.0
+            )
             should_compress = (compress_rank > 0 and
-                               (patch_compression == "aggressive" or pf_mode != "ties"))
+                               (patch_compression == "aggressive" or
+                                (patch_compression == "smart" and smart_compression_safe)))
             # Downcast from float32 to native weight dtype (e.g. fp16/bf16)
             # to halve memory — ComfyUI handles dtype conversion when applying
             if storage_dtype is not None and merged_diff.dtype != storage_dtype:
@@ -8785,7 +9013,9 @@ class LoRAOptimizer(_LoRAMergeBase):
             logging.info("[LoRA Optimizer] Auto output_strength: no suggestion available, using 1.0")
 
         all_explicit_clip = all(item["clip_strength"] is not None for item in active_loras)
-        if all_explicit_clip:
+        force_clip_multiplier = bool(
+            getattr(self, "_force_explicit_clip_multiplier", False))
+        if all_explicit_clip and not force_clip_multiplier:
             clip_strength_out = output_strength * clip_auto_scale
         else:
             clip_strength_out = output_strength * clip_strength_multiplier * clip_auto_scale
@@ -9818,6 +10048,13 @@ class LoRAOptimizerInline(LoRAOptimizer):
         "preserve": False,
     }
 
+    # Captured loader entries always carry explicit per-branch strengths. The
+    # regular engine treats an all-explicit stack as opting out of its global
+    # CLIP multiplier, but Inline exposes that multiplier as a node-wide
+    # control. Force it once at add_patches time so normalized merge modes do
+    # not cancel it and MODEL-only items cannot change whether it applies.
+    _force_explicit_clip_multiplier = True
+
     @classmethod
     def INPUT_TYPES(cls):
         # Widget inputs the user types live in "required": optional widget-type
@@ -9944,6 +10181,113 @@ class LoRAOptimizerInline(LoRAOptimizer):
         return names
 
     @staticmethod
+    def _canonical_chain_stamps(model_stamps, clip_stamps, tol=1e-4):
+        """Return a trustworthy full loader sequence when one stamped branch
+        is a subsequence of the other.
+
+        ModelOnly/TE-only calls can leave a hole on one patcher. Subsequent
+        ordinary loaders copy the longer attachment history to one branch, so
+        the full list is commonly available as a supersequence. If the two
+        histories conflict (neither is a subsequence), their relative order is
+        unknowable and this helper deliberately declines to guess.
+        """
+        def _normalized(seq):
+            out = []
+            for entry in seq or ():
+                try:
+                    name = entry.get("name")
+                    sm = float(entry.get("strength_model"))
+                    sc = float(entry.get("strength_clip"))
+                except (AttributeError, TypeError, ValueError):
+                    return None
+                if not name:
+                    return None
+                out.append({"name": name, "strength_model": sm,
+                            "strength_clip": sc})
+            return out
+
+        model_seq = _normalized(model_stamps)
+        clip_seq = _normalized(clip_stamps)
+        if model_seq is None or clip_seq is None:
+            return None
+        if not model_seq:
+            return clip_seq or None
+        if not clip_seq:
+            return model_seq
+
+        def _same(a, b):
+            return (a["name"] == b["name"]
+                    and abs(a["strength_model"] - b["strength_model"]) <= tol
+                    and abs(a["strength_clip"] - b["strength_clip"]) <= tol)
+
+        def _is_subsequence(shorter, longer):
+            pos = 0
+            for item in longer:
+                if pos < len(shorter) and _same(shorter[pos], item):
+                    pos += 1
+            return pos == len(shorter)
+
+        if _is_subsequence(model_seq, clip_seq):
+            return clip_seq
+        if _is_subsequence(clip_seq, model_seq):
+            return model_seq
+        return None
+
+    @staticmethod
+    def _align_groups_to_stamps(groups, names, stamps, strength_field,
+                                tol=1e-4):
+        """Place reconstructed groups into stamped loader slots.
+
+        The only accepted mapping is a unique, order-preserving strength match
+        for every group. This retains explicit ``None`` holes for branchless
+        calls without inventing attribution in ambiguous equal-strength cases.
+        ``names`` is the conservative identity result from
+        _resolve_stamp_names; alignment moves those values but never creates a
+        filename merely from position.
+        """
+        if not stamps:
+            return None
+        stamp_strengths = []
+        for entry in stamps:
+            try:
+                stamp_strengths.append(float(entry.get(strength_field)))
+            except (AttributeError, TypeError, ValueError):
+                return None
+        if len(groups) > len(stamps):
+            return None
+        if not groups:
+            return ([None] * len(stamps), [None] * len(stamps))
+
+        solutions = []
+
+        def _search(group_idx, stamp_start, path):
+            if len(solutions) > 1:
+                return
+            if group_idx == len(groups):
+                solutions.append(tuple(path))
+                return
+            remaining = len(groups) - group_idx
+            last_start = len(stamps) - remaining
+            strength = float(groups[group_idx]["strength"])
+            for stamp_idx in range(stamp_start, last_start + 1):
+                if abs(stamp_strengths[stamp_idx] - strength) <= tol:
+                    path.append(stamp_idx)
+                    _search(group_idx + 1, stamp_idx + 1, path)
+                    path.pop()
+
+        _search(0, 0, [])
+        if len(solutions) != 1:
+            return None
+
+        aligned_groups = [None] * len(stamps)
+        aligned_names = [None] * len(stamps)
+        for group_idx, stamp_idx in enumerate(solutions[0]):
+            aligned_groups[stamp_idx] = groups[group_idx]
+            if names and group_idx < len(names):
+                aligned_names[stamp_idx] = names[group_idx]
+        return aligned_groups, aligned_names
+
+    @staticmethod
     def _chain_groups_to_stack(model_groups, clip_groups, slots, visibility,
                                name_salt="", model_names=None, clip_names=None):
         """
@@ -9961,6 +10305,11 @@ class LoRAOptimizerInline(LoRAOptimizer):
         Slot strengths are MULTIPLIERS on the loader's captured strength.
         With visibility "simple" the single `strength` multiplier applies
         to both branches; "advanced" uses separate model/clip multipliers.
+        Every virtual item carries an explicit clip strength (0.0 when it has
+        no CLIP keys). Inline's node-wide clip_strength_multiplier is applied
+        once to the merged CLIP patch at add_patches time; keeping it out of
+        per-LoRA weights prevents weighted-average/normalize/SLERP from
+        cancelling that global scale.
         Disabled slots are excluded from the returned stack entirely.
 
         The engine drops items whose `strength` is 0 before merging (the
@@ -9972,7 +10321,17 @@ class LoRAOptimizerInline(LoRAOptimizer):
         """
         defaults = LoRAOptimizerInline._SLOT_DEFAULTS
         items = []
-        for i, group in enumerate(model_groups):
+        n_groups = max(len(model_groups), len(clip_groups))
+        for i in range(n_groups):
+            model_group = model_groups[i] if i < len(model_groups) else None
+            clip_group = clip_groups[i] if i < len(clip_groups) else None
+            model_mergeable = (model_group is not None
+                               and model_group.get("mergeable", True))
+            clip_mergeable = (clip_group is not None
+                              and clip_group.get("mergeable", True))
+            if not model_mergeable and not clip_mergeable:
+                continue
+
             opts = slots[i] if i < len(slots) else defaults
             if not opts.get("enabled", defaults["enabled"]):
                 continue
@@ -9981,33 +10340,36 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 clip_mult = opts.get("clip_strength", defaults["clip_strength"])
             else:
                 model_mult = clip_mult = opts.get("strength", defaults["strength"])
-            model_val = group["strength"] * model_mult
-            clip_val = None
-            if i < len(clip_groups):
-                clip_val = clip_groups[i]["strength"] * clip_mult
-            if model_val == 0 and not clip_val:
+
+            model_val = (model_group["strength"] * model_mult
+                         if model_mergeable else 0.0)
+            clip_val = (clip_group["strength"] * clip_mult
+                        if clip_mergeable else 0.0)
+            if model_val == 0 and clip_val == 0:
                 continue  # user zeroed this LoRA on every branch
+
             if model_val == 0:
                 # Model branch user-zeroed (e.g. LoraLoader strength_model=0)
-                # but the clip branch is live: keep the CLIP entries only and
-                # carry the clip product as the item strength so the engine's
-                # strength != 0 filter keeps the item alive.
-                lora_dict = dict(clip_groups[i]["entries"])
+                # or order-blocked, but the clip branch is live: keep the CLIP
+                # entries only and carry the clip product as the item strength
+                # so the engine's strength != 0 filter keeps the item alive.
+                lora_dict = dict(clip_group["entries"])
                 strength = clip_val
             else:
-                lora_dict = dict(group["entries"])
-                if clip_val:
+                lora_dict = dict(model_group["entries"])
+                if clip_val != 0:
                     # Silent-overwrite update is safe: model-patcher keys are
                     # always diffusion_model.* while clip-patcher keys live in
                     # the text-encoder namespace (clip_l.*, t5xxl.*, ...), so
                     # collisions cannot occur.
-                    lora_dict.update(clip_groups[i]["entries"])
+                    lora_dict.update(clip_group["entries"])
                 # else: paired clip branch zeroed — drop the clip keys (they
                 # would merge at zero anyway); clip_strength stays 0.0 as the
                 # honest record of the user's choice.
                 strength = model_val
+            clip_only_suffix = " (clip-only)" if not model_mergeable else ""
             item = {
-                "name": f"chain lora #{i + 1}{name_salt}",
+                "name": f"chain lora #{i + 1}{clip_only_suffix}{name_salt}",
                 "lora": lora_dict,
                 "_precomputed_diffs": True,
                 "strength": strength,
@@ -10019,66 +10381,90 @@ class LoRAOptimizerInline(LoRAOptimizer):
             }
             # Real filename recovered from a loader stamp -> file identity
             # (persistent key + community content hash reconcile with Stack).
-            # Prefer the model-branch name; the paired clip branch is the same
-            # loader/file, so it's a safe fallback for a model-zeroed item.
+            # Prefer the branch actually captured. A blocked branch remains on
+            # the incoming patcher and must never donate another file's identity
+            # to a live opposite-branch item.
             resolved = None
-            if model_names and i < len(model_names):
-                resolved = model_names[i]
-            if not resolved and clip_names and i < len(clip_names):
-                resolved = clip_names[i]
+            partial_blocked = ((model_group is not None and not model_mergeable)
+                               or (clip_group is not None and not clip_mergeable))
+            if not partial_blocked:
+                if model_mergeable and model_names and i < len(model_names):
+                    resolved = model_names[i]
+                if (not resolved and clip_mergeable and clip_names
+                        and i < len(clip_names)):
+                    resolved = clip_names[i]
             if resolved:
                 item["_resolved_file_name"] = resolved
-            items.append(item)
-        # Clip-only leftovers: loader calls that only patched the CLIP branch
-        for j in range(len(model_groups), len(clip_groups)):
-            opts = slots[j] if j < len(slots) else defaults
-            if not opts.get("enabled", defaults["enabled"]):
-                continue
-            if visibility == "advanced":
-                clip_mult = opts.get("clip_strength", defaults["clip_strength"])
-            else:
-                clip_mult = opts.get("strength", defaults["strength"])
-            clip_val = clip_groups[j]["strength"] * clip_mult
-            if clip_val == 0:
-                continue
-            item = {
-                "name": f"chain lora #{j + 1} (clip-only){name_salt}",
-                "lora": dict(clip_groups[j]["entries"]),
-                "_precomputed_diffs": True,
-                # Nonzero so the engine's strength filter keeps the item; no
-                # unet keys ride on it, so the scalar never touches unet math.
-                "strength": clip_val,
-                "clip_strength": clip_val,
-                "conflict_mode": opts.get("conflict_mode", defaults["conflict_mode"]),
-                "key_filter": opts.get("key_filter", defaults["key_filter"]),
-                "preserve": bool(opts.get("preserve", defaults["preserve"])),
-                "metadata": {},
-            }
-            if clip_names and j < len(clip_names) and clip_names[j]:
-                item["_resolved_file_name"] = clip_names[j]
             items.append(item)
         return items
 
     def execute_inline(self, model, output_strength, clip=None,
                        clip_strength_multiplier=1.0, settings=None,
                        chain_options=None):
-        model_groups = self._reconstruct_chain_groups(getattr(model, "patches", {}) or {})
+        raw_model_groups = self._reconstruct_chain_groups(
+            getattr(model, "patches", {}) or {}, include_blocked=True)
         clip_patcher = getattr(clip, "patcher", None) if clip is not None else None
-        clip_groups = (self._reconstruct_chain_groups(getattr(clip_patcher, "patches", {}) or {})
+        raw_clip_groups = (self._reconstruct_chain_groups(
+            getattr(clip_patcher, "patches", {}) or {}, include_blocked=True)
                        if clip_patcher is not None else [])
 
-        if not model_groups and not clip_groups:
+        model_groups = raw_model_groups
+        clip_groups = raw_clip_groups
+
+        # Recover real LoRA filenames stamped by stock/rgthree loaders (see
+        # _install_lora_name_stamp). Names remain conservative unique-strength
+        # matches, while the ordered stamp history can additionally retain
+        # explicit holes from ModelOnly/TE-only calls so opposite branches are
+        # never compacted into a synthetic cross-file LoRA.
+        model_stamps = self._read_chain_stamps(model)
+        clip_stamps = self._read_chain_stamps(clip)
+        model_names = self._resolve_stamp_names(
+            raw_model_groups, model_stamps, "strength_model")
+        clip_names = self._resolve_stamp_names(
+            raw_clip_groups, clip_stamps, "strength_clip")
+        canonical_stamps = self._canonical_chain_stamps(
+            model_stamps, clip_stamps)
+        if canonical_stamps is not None:
+            model_alignment = self._align_groups_to_stamps(
+                raw_model_groups, model_names, canonical_stamps,
+                "strength_model")
+            clip_alignment = self._align_groups_to_stamps(
+                raw_clip_groups, clip_names, canonical_stamps,
+                "strength_clip")
+            if model_alignment is not None and clip_alignment is not None:
+                model_groups, model_names = model_alignment
+                clip_groups, clip_names = clip_alignment
+
+        # If histories could not be aligned but both conservative filename
+        # matches prove that an index pairs different files, pass both groups
+        # through. A no-op is preferable to merging a MODEL branch from A with
+        # a CLIP branch from B and recording that hybrid under either identity.
+        identity_mismatches = 0
+        for i in range(max(len(model_groups), len(clip_groups))):
+            mg = model_groups[i] if i < len(model_groups) else None
+            cg = clip_groups[i] if i < len(clip_groups) else None
+            mn = model_names[i] if i < len(model_names) else None
+            cn = clip_names[i] if i < len(clip_names) else None
+            if mg is not None and cg is not None and mn and cn and mn != cn:
+                identity_mismatches += 1
+                for group in (mg, cg):
+                    group["mergeable"] = False
+                    group["captured"] = []
+                    group["blocked_reason"] = "loader identity mismatch"
+
+        has_mergeable = any(g is not None and g.get("mergeable", True)
+                            for g in model_groups + clip_groups)
+        if not has_mergeable:
             n_entries = sum(len(v) for v in (getattr(model, "patches", {}) or {}).values())
             if clip_patcher is not None:
                 n_entries += sum(len(v) for v in (clip_patcher.patches or {}).values())
             if n_entries:
-                # Patches exist but none are LoRA-family — "move the node"
-                # would be wrong advice.
+                mismatch_note = (f" ({identity_mismatches} MODEL/CLIP loader "
+                                 "identity mismatch)"
+                                 if identity_mismatches else "")
                 report = (f"[Inline Optimizer] {n_entries} non-mergeable patch "
-                          f"entries found on the incoming model/clip (e.g. "
-                          f"OFT/BOFT rotations, weight-set patches, hooked "
-                          f"entries) and passed through untouched; model "
-                          f"unchanged.")
+                          f"entries found on the incoming model/clip{mismatch_note} "
+                          f"and passed through untouched; model unchanged.")
             else:
                 report = ("[Inline Optimizer] No LoRA patches found on the "
                           "incoming model/clip. Place this node AFTER your "
@@ -10107,17 +10493,6 @@ class LoRAOptimizerInline(LoRAOptimizer):
         if clip_patcher is not None:
             salt += "/" + str(getattr(clip_patcher, "patches_uuid", ""))[:8]
 
-        # Recover real LoRA filenames stamped by stock/rgthree loaders (see
-        # _install_lora_name_stamp) and align them to the reconstructed groups
-        # by chain order + strength. Named groups display real names and carry
-        # file identity so memory/community reconcile with the Stack path;
-        # unstamped groups (custom loaders / no attachment) keep the generic
-        # ``chain lora #N`` display + captured-content-hash identity.
-        model_names = self._resolve_stamp_names(
-            model_groups, self._read_chain_stamps(model), "strength_model")
-        clip_names = self._resolve_stamp_names(
-            clip_groups, self._read_chain_stamps(clip), "strength_clip")
-
         stack = self._chain_groups_to_stack(model_groups, clip_groups, slots,
                                             visibility,
                                             name_salt=f" [{salt}]",
@@ -10125,12 +10500,13 @@ class LoRAOptimizerInline(LoRAOptimizer):
                                             clip_names=clip_names)
 
         stripped_model = model.clone()
-        self._strip_captured_entries(stripped_model, model_groups)
+        self._strip_captured_entries(stripped_model, raw_model_groups)
         stripped_clip = None
         if clip is not None:
             stripped_clip = clip.clone()
             if clip_patcher is not None:
-                self._strip_captured_entries(stripped_clip.patcher, clip_groups)
+                self._strip_captured_entries(stripped_clip.patcher,
+                                             raw_clip_groups)
 
         # Non-capturable entries stay on the stripped clones (passed through);
         # count both branches for the report.
@@ -10141,7 +10517,11 @@ class LoRAOptimizerInline(LoRAOptimizer):
             passthrough += sum(len(v) for v in
                                (stripped_clip_patcher.patches or {}).values())
 
-        merge_kwargs = dict(clip=stripped_clip,
+        # Standalone Inline is the drop-in counterpart of the user-facing
+        # LoRA Optimizer node, so inherit its defaults instead of the lower-
+        # level engine signature (which differs, notably for auto-strength).
+        merge_kwargs = dict(LoRAOptimizerSimple._SIMPLE_DEFAULTS)
+        merge_kwargs.update(clip=stripped_clip,
                             clip_strength_multiplier=clip_strength_multiplier,
                             # Captured entries already carry model-canonical
                             # target keys — never re-normalize them. Pinned
@@ -10187,9 +10567,11 @@ class LoRAOptimizerInline(LoRAOptimizer):
         # Union of model + clip entry keys; tuple (fused-QKV) keys stringified.
         combined_keys = {}
         for g in model_groups:
-            combined_keys.update(g["entries"])
+            if g is not None and g.get("mergeable", True):
+                combined_keys.update(g["entries"])
         for g in clip_groups:
-            combined_keys.update(g["entries"])
+            if g is not None and g.get("mergeable", True):
+                combined_keys.update(g["entries"])
         detected_arch = self._detect_architecture(
             self._stringify_lora_keys(combined_keys))
         arch_display = detected_arch if detected_arch != "unknown" else None
@@ -10217,6 +10599,9 @@ class LoRAOptimizerInline(LoRAOptimizer):
             # canonical, so re-normalizing would corrupt them.
             if not hasattr(self, '_autotuner_delegate'):
                 self._autotuner_delegate = LoRAAutoTuner()
+            # AutoTuner candidates execute on the delegate instance, so mirror
+            # Inline's apply-stage CLIP multiplier policy there as well.
+            self._autotuner_delegate._force_explicit_clip_multiplier = True
             result = self._autotuner_delegate.auto_tune(
                 stripped_model, stack, output_strength,
                 clip=stripped_clip, clip_strength_multiplier=clip_strength_multiplier,
@@ -10280,27 +10665,63 @@ class LoRAOptimizerInline(LoRAOptimizer):
                 return f"{names[idx]} — "
             return ""
         lines = ["[Inline Optimizer] Detected loader chain (slot -> LoRA mapping):"]
-        for i, g in enumerate(model_groups):
-            ranks = [r for r in (self._payload_rank(p) for p in g["entries"].values())
-                     if r is not None]
-            rank_s = f"rank {max(ranks)}" if ranks else "dense"
-            clip_note = ""
-            if i < len(clip_groups):
-                clip_note = (f", +{len(clip_groups[i]['entries'])} clip keys "
-                             f"@ {clip_groups[i]['strength']:.2f}")
-            lines.append(f"  #{i + 1}: {_label(model_names, i)}{len(g['entries'])} "
-                         f"keys, {rank_s}, "
-                         f"loader strength {g['strength']:.2f}{clip_note}")
-        for j in range(len(model_groups), len(clip_groups)):
-            lines.append(f"  #{j + 1}: {_label(clip_names, j)}clip-only, "
-                         f"{len(clip_groups[j]['entries'])} "
-                         f"clip keys @ {clip_groups[j]['strength']:.2f}")
+        n = max(len(model_groups), len(clip_groups))
+        has_blocked = False
+        for i in range(n):
+            model_group = model_groups[i] if i < len(model_groups) else None
+            clip_group = clip_groups[i] if i < len(clip_groups) else None
+            model_mergeable = (model_group is not None
+                               and model_group.get("mergeable", True))
+            clip_mergeable = (clip_group is not None
+                              and clip_group.get("mergeable", True))
+
+            # Label from the branch actually captured. A blocked opposite
+            # branch can have a different unresolved history and must not win.
+            if model_mergeable:
+                label = _label(model_names, i) or _label(clip_names, i)
+            elif clip_mergeable:
+                label = _label(clip_names, i) or _label(model_names, i)
+            else:
+                label = _label(model_names, i) or _label(clip_names, i)
+            if model_mergeable:
+                ranks = [r for r in
+                         (self._payload_rank(p)
+                          for p in model_group["entries"].values())
+                         if r is not None]
+                rank_s = f"rank {max(ranks)}" if ranks else "dense"
+                detail = (f"{len(model_group['entries'])} keys, {rank_s}, "
+                          f"loader strength {model_group['strength']:.2f}")
+            elif model_group is not None:
+                has_blocked = True
+                detail = ("model passthrough/order-blocked "
+                          f"({len(model_group['entries'])} keys @ "
+                          f"{model_group['strength']:.2f})")
+            elif clip_mergeable:
+                detail = (f"clip-only, {len(clip_group['entries'])} "
+                          f"clip keys @ {clip_group['strength']:.2f}")
+            elif clip_group is not None:
+                has_blocked = True
+                detail = ("clip-only passthrough/order-blocked "
+                          f"({len(clip_group['entries'])} keys @ "
+                          f"{clip_group['strength']:.2f})")
+            else:
+                detail = "no captured patch keys (loader slot retained)"
+
+            if model_group is not None and clip_group is not None:
+                if clip_mergeable:
+                    detail += (f", +{len(clip_group['entries'])} clip keys "
+                               f"@ {clip_group['strength']:.2f}")
+                else:
+                    has_blocked = True
+                    detail += (", clip passthrough/order-blocked "
+                               f"({len(clip_group['entries'])} keys @ "
+                               f"{clip_group['strength']:.2f})")
+            lines.append(f"  #{i + 1}: {label}{detail}")
         if model_groups and clip_groups and len(model_groups) != len(clip_groups):
             lines.append(f"  warning: {len(model_groups)} model-side vs "
                          f"{len(clip_groups)} clip-side LoRA groups — clip "
                          f"attribution is by order and may be off (e.g. "
                          f"LoraLoaderModelOnly or TE-only LoRAs in the chain).")
-        n = max(len(model_groups), len(clip_groups))
         if lora_count < n:
             lines.append(f"  note: {n} LoRAs detected but only {lora_count} option "
                          f"slots — extra LoRAs use default options.")
@@ -10308,8 +10729,12 @@ class LoRAOptimizerInline(LoRAOptimizer):
             lines.append(f"  note: {lora_count} option slots but only {n} LoRAs "
                          f"detected — extra slots ignored.")
         if passthrough_count > 0:
-            lines.append(f"  note: {passthrough_count} non-LoRA patch entries "
+            lines.append(f"  note: {passthrough_count} non-mergeable patch entries "
                          f"passed through untouched (left on the model/clip).")
+        if has_blocked:
+            lines.append("  note: inline options/output strength affect only "
+                         "captured additive branches; passthrough branches keep "
+                         "their original loader settings and order.")
         if arch_display:
             lines.append(f"  architecture: {arch_display} (detected from "
                          f"captured keys)")

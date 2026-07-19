@@ -16,7 +16,7 @@ _ALPHA_DEFAULT = object()
 
 
 def _adapter(rank=4, out_dim=8, in_dim=8, up=None, down=None,
-             alpha=_ALPHA_DEFAULT):
+             alpha=_ALPHA_DEFAULT, dora_scale=None, reshape=None):
     """Minimal LoRAAdapter-like payload the engine can expand. Explicit
     up/down matrices make the expanded diff deterministic (alpha == rank, so
     the diff is exactly up @ down). Pass alpha=None to mimic PEFT/diffusers/
@@ -30,7 +30,7 @@ def _adapter(rank=4, out_dim=8, in_dim=8, up=None, down=None,
         alpha = float(rank)  # alpha == rank -> scale 1.0, diff == up @ down
     return lora_optimizer.LoRAAdapter(
         loaded_keys=set(),
-        weights=(up, down, alpha, None, None, None),
+        weights=(up, down, alpha, None, dora_scale, reshape),
     )
 
 
@@ -104,6 +104,33 @@ class TestPatchClassification(unittest.TestCase):
 
     def test_malformed_diff_passes_through(self):
         e = _entry(1.0, ("diff", None))
+        self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
+
+    def test_dora_adapter_passes_through(self):
+        # DoRA depends on the current base weight, so expanding only up @ down
+        # and re-appending it later is not an additive-equivalent operation.
+        payloads = [
+            _adapter(dora_scale=torch.ones(8, 1)),
+            lora_optimizer.LoKrAdapter(
+                set(), (torch.randn(4, 4), torch.randn(2, 2), None,
+                        None, None, None, None, None, torch.ones(8, 1))),
+            lora_optimizer.LoHaAdapter(
+                set(), (torch.randn(8, 2), torch.randn(2, 8), 2.0,
+                        torch.randn(8, 2), torch.randn(2, 8), None, None,
+                        torch.ones(8, 1))),
+        ]
+        for payload in payloads:
+            with self.subTest(payload=type(payload).__name__):
+                self.assertFalse(
+                    lora_optimizer._LoRAMergeBase._is_capturable_entry(
+                        _entry(1.0, payload)))
+
+    def test_reshape_adapter_passes_through(self):
+        # Comfy pads/replaces the working weight shape before applying a
+        # reshape-bearing LoRA.  A bare merged delta loses that operation.
+        up = torch.randn(9, 4)
+        down = torch.randn(4, 8)
+        e = _entry(1.0, _adapter(up=up, down=down, reshape=[9, 8]))
         self.assertFalse(lora_optimizer._LoRAMergeBase._is_capturable_entry(e))
 
 
@@ -210,9 +237,9 @@ class TestChainGroupReconstruction(unittest.TestCase):
         groups = self._reconstruct(patches)
         self.assertEqual(list(groups[0]["entries"]), [("qkv", off)])
 
-    def test_noncapturable_entries_ignored(self):
+    def test_noncapturable_entry_on_other_target_ignored(self):
         patches = _chain_patches((0.8, {"a": _adapter()}))
-        patches["a"].append(_entry(1.0, ("set", (torch.zeros(2, 2),))))
+        patches["z"] = [_entry(1.0, ("set", (torch.zeros(2, 2),)))]
         groups = self._reconstruct(patches)
         self.assertEqual(len(groups), 1)
         self.assertEqual(set(groups[0]["entries"]), {"a"})
@@ -222,10 +249,76 @@ class TestChainGroupReconstruction(unittest.TestCase):
 
     def test_non_5_tuple_entry_ignored_without_raising(self):
         patches = _chain_patches((0.8, {"a": _adapter()}))
-        patches["a"].append((1.0, _adapter(), 1.0))  # nonstandard 3-tuple
+        patches["z"] = [(1.0, _adapter(), 1.0)]  # nonstandard 3-tuple
         groups = self._reconstruct(patches)
         self.assertEqual(len(groups), 1)
         self.assertEqual(set(groups[0]["entries"]), {"a"})
+
+    def test_unsafe_entry_blocks_every_target_from_the_same_loader_call(self):
+        # One add_patches call shares the exact strength object across all of
+        # its target entries.  If one entry is DoRA/reshape/order-dependent,
+        # capturing only the other entry would partially rewrite one LoRA.
+        patches = _chain_patches(
+            (0.8, {"unsafe": _adapter(dora_scale=torch.ones(8, 1)),
+                   "otherwise_safe": _adapter()}),
+            (0.5, {"independent": _adapter()}),
+        )
+        groups = self._reconstruct(patches)
+        self.assertEqual(len(groups), 1)
+        self.assertAlmostEqual(groups[0]["strength"], 0.5)
+        self.assertEqual(set(groups[0]["entries"]), {"independent"})
+
+    def test_unsafe_barrier_blocks_prefix_but_allows_additive_suffix(self):
+        # Call A is unsafe on x and otherwise ordinary on y.  Call B also
+        # touches y.  Moving B is safe only when B is AFTER A already: Inline
+        # removes it and appends the optimized diff back at the same tail
+        # position.  When B precedes A, moving it across A would change order.
+        unsafe_call = (
+            0.8,
+            {"x": _adapter(dora_scale=torch.ones(8, 1)),
+             "y": _adapter()},
+        )
+        shared_call = (0.5, {"y": _adapter()})
+
+        groups = self._reconstruct(_chain_patches(unsafe_call, shared_call))
+        self.assertEqual(len(groups), 1)
+        self.assertAlmostEqual(groups[0]["strength"], 0.5)
+        self.assertEqual(set(groups[0]["entries"]), {"y"})
+
+        groups = self._reconstruct(_chain_patches(shared_call, unsafe_call))
+        self.assertEqual(groups, [])
+
+    def test_include_blocked_retains_loader_slot_placeholder(self):
+        patches = _chain_patches(
+            (0.8, {"unsafe": _adapter(dora_scale=torch.ones(8, 1))}),
+            (0.5, {"safe": _adapter()}),
+        )
+        groups = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            patches, include_blocked=True)
+        self.assertEqual(len(groups), 2)
+        self.assertFalse(groups[0]["mergeable"])
+        self.assertEqual(groups[0]["captured"], [])
+        self.assertEqual(set(groups[0]["entries"]), {"unsafe"})
+        self.assertTrue(groups[1]["mergeable"])
+        self.assertEqual(set(groups[1]["entries"]), {"safe"})
+
+    def test_shape_changing_barrier_blocks_additive_suffix(self):
+        # The base target may be 8x8, while reshape pads it to 9x8 before the
+        # later 9x8 LoRA. Inline resolves expansion shapes from the unpatched
+        # base, so capturing that suffix would drop it as a mismatch.
+        reshape = _adapter(
+            up=torch.randn(9, 4), down=torch.randn(4, 8), reshape=[9, 8])
+        post_reshape = _adapter(up=torch.randn(9, 4), down=torch.randn(4, 8))
+        patches = _chain_patches(
+            (0.8, {"layer.weight": reshape}),
+            (0.5, {"layer.weight": post_reshape}),
+        )
+        self.assertEqual(self._reconstruct(patches), [])
+        groups = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            patches, include_blocked=True)
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(not g["mergeable"] for g in groups))
+        self.assertTrue(all(g["captured"] == [] for g in groups))
 
     def test_interleaved_collision_no_fragmentation(self):
         # Distinct-strength loader X on {a} first, then two interned-strength
@@ -284,16 +377,29 @@ class _FakePatcher:
 
 
 class TestStripCaptured(unittest.TestCase):
-    def test_strips_only_captured_entries(self):
+    def test_interleaved_noncapturable_entry_blocks_target_and_preserves_order(self):
         keep = _entry(1.0, ("set", (torch.zeros(2, 2),)))
         patches = _chain_patches((0.8, {"a": _adapter(), "b": _adapter()}))
         patches["a"].append(keep)
+        tail_strength = struct.unpack("d", struct.pack("d", 0.6))[0]
+        tail = _entry(tail_strength, _adapter())
+        patches["a"].append(tail)
+        original_a = list(patches["a"])
+        original_b = list(patches["b"])
         patcher = _FakePatcher(patches)
         groups = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(patcher.patches)
         clone = patcher.clone()
         lora_optimizer._LoRAMergeBase._strip_captured_entries(clone, groups)
-        self.assertEqual(clone.patches, {"a": [keep]})
-        self.assertEqual(len(patcher.patches["a"]), 2)  # original untouched
+        # A generic weight-set barrier may replace the working tensor shape.
+        # Inline resolves against the unpatched base, so both the shared prefix
+        # and the additive suffix remain untouched conservatively.
+        self.assertEqual(groups, [])
+        self.assertEqual(clone.patches,
+                         {"a": original_a, "b": original_b})
+        self.assertIs(clone.patches["a"][0], original_a[0])
+        self.assertIs(clone.patches["a"][1], keep)
+        self.assertIs(clone.patches["a"][2], tail)
+        self.assertEqual(len(patcher.patches["a"]), 3)  # original untouched
 
     def test_uuid_regenerated(self):
         patcher = _FakePatcher(_chain_patches((0.8, {"a": _adapter()})))
@@ -323,7 +429,7 @@ class TestChainStackBuild(unittest.TestCase):
         item = stack[0]
         self.assertTrue(item["_precomputed_diffs"])
         self.assertAlmostEqual(item["strength"], 0.8)     # loader strength kept
-        self.assertIsNone(item["clip_strength"])
+        self.assertEqual(item["clip_strength"], 0.0)
         self.assertEqual(item["conflict_mode"], "all")
         self.assertIn("a", item["lora"])
 
@@ -423,6 +529,17 @@ class TestChainStackBuild(unittest.TestCase):
         self.assertAlmostEqual(stack[0]["strength"], 0.4)          # 0.8 × 0.5
         self.assertAlmostEqual(stack[0]["clip_strength"], 0.3)     # 0.6 × 0.5
 
+    def test_global_clip_multiplier_stays_out_of_relative_item_weights(self):
+        mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.8, {"a": _adapter()})))
+        cg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
+            _chain_patches((0.6, {"te.a": _adapter()})))
+        stack = self._build(mg, cg, [_slot()])
+        self.assertAlmostEqual(stack[0]["strength"], 0.8)
+        self.assertAlmostEqual(stack[0]["clip_strength"], 0.6)
+        self.assertTrue(
+            lora_optimizer.LoRAOptimizerInline._force_explicit_clip_multiplier)
+
     def test_extra_slots_ignored(self):
         mg = lora_optimizer._LoRAMergeBase._reconstruct_chain_groups(
             _chain_patches((0.8, {"a": _adapter()})))
@@ -501,6 +618,22 @@ class TestInlineExecute(unittest.TestCase):
         self.assertIsNot(seen["model"], model)
         self.assertEqual(seen["normalize_keys"], "disabled")
 
+    def test_no_settings_inherits_simple_defaults_with_inline_pins(self):
+        # Standalone Inline should make the same quality decisions as the
+        # simplified dedicated optimizer.  Only the two inline-inapplicable
+        # cache/key-normalization settings are deliberately pinned off.
+        model = self._model(_chain_patches(
+            (0.8, {"a": _adapter()}), (0.5, {"a": _adapter()})))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        node.execute_inline(model, output_strength=1.0)
+
+        for key, value in lora_optimizer.LoRAOptimizerSimple._SIMPLE_DEFAULTS.items():
+            expected = "disabled" if key in ("normalize_keys", "cache_patches") else value
+            self.assertIn(key, seen)
+            self.assertEqual(seen[key], expected, key)
+
     def test_report_prepends_fingerprints(self):
         model = self._model(_chain_patches((0.8, {"a": _adapter(), "b": _adapter()})))
         node = self._node()
@@ -525,6 +658,108 @@ class TestInlineExecute(unittest.TestCase):
         self.assertEqual(len(seen["stack"]), 1)
         self.assertAlmostEqual(seen["stack"][0]["strength"], 0.5)
         self.assertEqual(seen["model"].patches, {})   # disabled LoRA stripped too
+
+    def test_blocked_loader_keeps_its_slot_and_does_not_shift_safe_suffix(self):
+        # Loader #1 is DoRA and must pass through. Loader #2 is ordinary and
+        # remains attributable to slot #2; compacting blocked groups would
+        # incorrectly apply the disabled slot #1 to it.
+        unsafe = _adapter(dora_scale=torch.ones(8, 1))
+        safe = _adapter()
+        model = self._model(_chain_patches(
+            (0.8, {"unsafe": unsafe}),
+            (0.5, {"safe": safe}),
+        ))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        result = node.execute_inline(
+            model, output_strength=1.0,
+            chain_options={"visibility": "simple",
+                           "slots": [_slot(enabled=False), _slot()]})
+
+        self.assertEqual(len(seen["stack"]), 1)
+        self.assertTrue(seen["stack"][0]["name"].startswith("chain lora #2"))
+        self.assertEqual(set(seen["stack"][0]["lora"]), {"safe"})
+        self.assertAlmostEqual(seen["stack"][0]["strength"], 0.5)
+        self.assertEqual(set(seen["model"].patches), {"unsafe"})
+        self.assertIs(seen["model"].patches["unsafe"][0][1], unsafe)
+        report = self._out(result)[2]
+        self.assertIn("#1: model passthrough/order-blocked", report)
+        self.assertIn("#2: 1 keys", report)
+
+    def test_asymmetric_model_clip_blocking_never_cross_pairs_files(self):
+        # Slot #1: MODEL is DoRA-blocked, CLIP is additive.
+        # Slot #2: MODEL is additive, CLIP is DoRA-blocked.
+        # Both branches need placeholders or independent compaction would
+        # create one hybrid virtual LoRA containing slot #2 MODEL + slot #1 CLIP.
+        model_unsafe = _adapter(dora_scale=torch.ones(8, 1))
+        model_safe = _adapter()
+        clip_safe = _adapter()
+        clip_unsafe = _adapter(dora_scale=torch.ones(8, 1))
+        model = self._model(_chain_patches(
+            (0.8, {"model.unsafe": model_unsafe}),
+            (0.5, {"model.safe": model_safe}),
+        ))
+        clip = _FakeCLIP(_FakePatcher(_chain_patches(
+            (0.8, {"te.safe": clip_safe}),
+            (0.5, {"te.unsafe": clip_unsafe}),
+        )))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        result = node.execute_inline(model, output_strength=1.0, clip=clip)
+
+        self.assertEqual(len(seen["stack"]), 2)
+        first, second = seen["stack"]
+        self.assertTrue(first["name"].startswith("chain lora #1"))
+        self.assertEqual(set(first["lora"]), {"te.safe"})
+        self.assertAlmostEqual(first["strength"], 0.8)
+        self.assertAlmostEqual(first["clip_strength"], 0.8)
+        self.assertTrue(second["name"].startswith("chain lora #2"))
+        self.assertEqual(set(second["lora"]), {"model.safe"})
+        self.assertAlmostEqual(second["strength"], 0.5)
+        self.assertEqual(second["clip_strength"], 0.0)
+
+        # Only the two blocked branches remain on the clones passed onward.
+        self.assertEqual(set(seen["model"].patches), {"model.unsafe"})
+        self.assertEqual(set(seen["clip"].patcher.patches), {"te.unsafe"})
+        report = self._out(result)[2]
+        self.assertIn("#1: model passthrough/order-blocked", report)
+        self.assertIn("#2: 1 keys, rank 4", report)
+        self.assertIn("clip passthrough/order-blocked", report)
+
+    def test_clip_multiplier_is_stable_with_or_without_model_only_item(self):
+        # Explicit captured CLIP strengths used to bypass the node-wide
+        # multiplier. Worse, adding any MODEL-only item changed the engine's
+        # all-explicit decision and suddenly scaled every CLIP patch.
+        for add_model_only in (False, True):
+            with self.subTest(add_model_only=add_model_only):
+                calls = [(0.8, {"model.a": _adapter()})]
+                if add_model_only:
+                    calls.append((0.4, {"model.only": _adapter()}))
+                model = self._model(_chain_patches(*calls))
+                clip = _FakeCLIP(_FakePatcher(_chain_patches(
+                    (0.6, {"te.a": _adapter()}))))
+                node = self._node()
+                seen = {}
+                self._capture_merge(node, seen)
+                node.execute_inline(
+                    model, output_strength=1.0, clip=clip,
+                    clip_strength_multiplier=0.5)
+
+                clip_items = [item for item in seen["stack"]
+                              if "te.a" in item["lora"]]
+                self.assertEqual(len(clip_items), 1)
+                # Per-item weights keep loader-relative ratios; the node-wide
+                # 0.5 is forced once at the engine's CLIP add_patches stage.
+                self.assertAlmostEqual(clip_items[0]["clip_strength"], 0.6)
+                self.assertTrue(node._force_explicit_clip_multiplier)
+                self.assertTrue(all(item["clip_strength"] is not None
+                                    for item in seen["stack"]))
+                if add_model_only:
+                    model_only = [item for item in seen["stack"]
+                                  if "model.only" in item["lora"]][0]
+                    self.assertEqual(model_only["clip_strength"], 0.0)
 
     def test_unconnected_chain_options_merges_all_with_defaults(self):
         # chain_options unconnected (None): every captured LoRA merges with
@@ -563,13 +798,16 @@ class TestInlineExecute(unittest.TestCase):
 
     def test_fingerprint_counts_passthrough_entries(self):
         patches = _chain_patches((0.8, {"a": _adapter()}))
-        patches["a"].append(_entry(1.0, ("set", (torch.zeros(2, 2),))))
+        # Keep the noncapturable entry on a distinct target so key a remains
+        # mergeable; a barrier on key a intentionally leaves both entries and
+        # is covered by TestStripCaptured.
+        patches["z"] = [_entry(1.0, ("set", (torch.zeros(2, 2),)))]
         model = self._model(patches)
         node = self._node()
         node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
         result = node.execute_inline(model, output_strength=1.0)
         report = self._out(result)[2]
-        self.assertIn("1 non-LoRA", report)
+        self.assertIn("1 non-mergeable", report)
         self.assertIn("passed through untouched", report)
 
     def test_no_passthrough_note_when_all_captured(self):
@@ -577,7 +815,7 @@ class TestInlineExecute(unittest.TestCase):
         node = self._node()
         node.optimize_merge = lambda m, s, o, **kw: (m, None, "r", None, None)
         report = self._out(node.execute_inline(model, output_strength=1.0))[2]
-        self.assertNotIn("non-LoRA", report)
+        self.assertNotIn("non-mergeable", report)
 
     def test_fingerprint_notes_fewer_slots_than_loras(self):
         model = self._model(_chain_patches(
@@ -647,13 +885,15 @@ class TestInlineExecute(unittest.TestCase):
     def test_passthrough_count_includes_clip_side(self):
         model = self._model(_chain_patches((0.8, {"a": _adapter()})))
         clip_patches = _chain_patches((0.6, {"te.a": _adapter()}))
-        clip_patches["te.a"].append(_entry(1.0, ("set", (torch.zeros(2, 2),))))
+        clip_patches["te.z"] = [
+            _entry(1.0, ("set", (torch.zeros(2, 2),)))
+        ]
         clip = _FakeCLIP(_FakePatcher(clip_patches))
         node = self._node()
         node.optimize_merge = lambda m, s, o, **kw: (m, kw.get("clip"), "r", None, None)
         report = self._out(node.execute_inline(model, output_strength=1.0,
                                                clip=clip))[2]
-        self.assertIn("1 non-LoRA", report)          # the clip-side "set" entry
+        self.assertIn("1 non-mergeable", report)     # the clip-side "set" entry
         self.assertIn("passed through untouched", report)
 
     def test_lokr_payload_reports_dense_rank(self):
@@ -840,6 +1080,33 @@ def _pipeline_model(patches, applied, dim=16):
     return _attach(_FakePatcher(patches))
 
 
+def _pipeline_clip(patches, applied, dim=16):
+    """CLIP counterpart to _pipeline_model with a real clone/add_patches
+    recording path and a readable base target for _resolve_target_shape."""
+    base = types.SimpleNamespace(
+        clip_layer=types.SimpleNamespace(weight=torch.zeros(dim, dim)))
+
+    def _attach_patcher(p):
+        p.clone = lambda: _attach_patcher(
+            _FakePatcher({k: v[:] for k, v in p.patches.items()}))
+        return p
+
+    class _PipelineCLIP:
+        def __init__(self, patcher):
+            self.patcher = patcher
+            self.cond_stage_model = base
+
+        def clone(self):
+            return _PipelineCLIP(self.patcher.clone())
+
+        def add_patches(self, patches_, strength=1.0, strength_clip=None):
+            applied.update(patches=dict(patches_), strength=strength,
+                           clip=self)
+            return list(patches_.keys())
+
+    return _PipelineCLIP(_attach_patcher(_FakePatcher(patches)))
+
+
 class TestSingleLoraVirtualPath(unittest.TestCase):
     """A 1-LoRA chain (or N LoRAs with all but one disabled) must NOT take
     optimize_merge's single-LoRA fast path: load_lora_for_models looks up
@@ -1020,12 +1287,12 @@ class TestVirtualLinearFastPath(unittest.TestCase):
         self.assertIsNotNone(info, "fast path unexpectedly fell back to dense")
         return info, self.opt._expand_patch_to_diff(info["patch"])
 
-    def _assert_equiv(self, active, mode, model, scale=1.0):
+    def _assert_equiv(self, active, mode, model, scale=1.0, atol=5e-6):
         dense = self._dense(active, mode, model, scale)
         _info, recon = self._fast(active, mode, model, scale)
         self.assertEqual(tuple(recon.shape), tuple(dense.shape))
         self.assertTrue(
-            torch.allclose(recon, dense, atol=1e-6),
+            torch.allclose(recon, dense, atol=atol, rtol=0.0),
             f"mode={mode} scale={scale} max err "
             f"{(recon - dense).abs().max().item()}")
 
@@ -1114,6 +1381,25 @@ class TestVirtualLinearFastPath(unittest.TestCase):
         ]
         self._assert_equiv(active, "weighted_sum", _layer_model())
 
+    def test_reduced_precision_factors_are_scaled_in_float32(self):
+        # Comfy casts adapter factors to its float32 intermediate dtype before
+        # applying alpha/strength.  Scaling the source BF16/FP16 up matrix first
+        # irreversibly rounds it and makes Inline additive differ from Load LoRA.
+        for dtype in (torch.float16, torch.bfloat16):
+            with self.subTest(dtype=dtype):
+                up_a = torch.linspace(-1.0, 1.0, 8 * 4).reshape(8, 4).to(dtype)
+                down_a = torch.linspace(0.7, -0.4, 4 * 8).reshape(4, 8).to(dtype)
+                up_b = torch.linspace(-0.3, 1.2, 8 * 4).reshape(8, 4).to(dtype)
+                down_b = torch.linspace(-0.8, 0.5, 4 * 8).reshape(4, 8).to(dtype)
+                active = [
+                    _virtual_item({self.KEY: _lora_adapter(
+                        up_a, down_a, 2.0)}, strength=0.37),
+                    _virtual_item({self.KEY: _lora_adapter(
+                        up_b, down_b, 6.0)}, strength=-0.61),
+                ]
+                self._assert_equiv(
+                    active, "weighted_sum", _layer_model(), atol=5e-6)
+
     # ---- fallback: non-qualifying payloads keep the dense path -----------
     def _lokr(self):
         return lora_optimizer.LoKrAdapter(set(), (
@@ -1137,6 +1423,14 @@ class TestVirtualLinearFastPath(unittest.TestCase):
         self.assertFalse(f(lora_optimizer.LoRAAdapter(
             set(), (torch.randn(8, 2, 1, 1), torch.randn(2, 8, 1, 1),
                     2.0, None, None, None))))
+        # Base-dependent/shape-changing LoRA metadata must never enter the
+        # supposedly exact additive concat path.
+        self.assertFalse(f(lora_optimizer.LoRAAdapter(
+            set(), (torch.randn(8, 2), torch.randn(2, 8), 2.0, None,
+                    torch.ones(8, 1), None))))
+        self.assertFalse(f(lora_optimizer.LoRAAdapter(
+            set(), (torch.randn(9, 2), torch.randn(2, 8), 2.0, None,
+                    None, [9, 8]))))
 
     def test_group_ok_true_for_pure_file_group(self):
         # No virtual contributor -> True (file path stays exactly as before)
@@ -1296,6 +1590,47 @@ def _advanced_settings(**overrides):
     }
     settings.update(overrides)
     return settings
+
+
+class TestInlineClipMultiplierEndToEnd(unittest.TestCase):
+    KEY = "clip_layer.weight"
+
+    def _run(self, multiplier):
+        applied = {}
+        model = _pipeline_model({}, {})
+        up_a = torch.linspace(-1.0, 1.0, 16 * 4).reshape(16, 4)
+        down_a = torch.linspace(0.8, -0.4, 4 * 16).reshape(4, 16)
+        up_b = torch.linspace(-0.2, 1.1, 16 * 4).reshape(16, 4)
+        down_b = torch.linspace(-0.7, 0.6, 4 * 16).reshape(4, 16)
+        clip = _pipeline_clip(_chain_patches(
+            (0.8, {self.KEY: _adapter(up=up_a, down=down_a)}),
+            (0.6, {self.KEY: _adapter(up=up_b, down=down_b)}),
+        ), applied)
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"model_alias": "layer.weight"}
+        settings = _advanced_settings(
+            optimization_mode="global",
+            merge_strategy_override="weighted_average")
+        with mock.patch.object(
+                lora_optimizer.comfy.lora, "model_lora_keys_clip",
+                return_value={"clip_alias": self.KEY}):
+            node.execute_inline(
+                model, output_strength=1.0, clip=clip,
+                clip_strength_multiplier=multiplier, settings=settings)
+        patch = applied["patches"][self.KEY]
+        return lora_optimizer._LoRAMergeBase._expand_patch_to_diff(patch), \
+            applied["strength"]
+
+    def test_multiplier_scales_normalized_merge_once_at_apply(self):
+        full_patch, full_apply = self._run(1.0)
+        half_patch, half_apply = self._run(0.5)
+        # weighted_average normalizes relative per-LoRA weights, so its patch
+        # is intentionally unchanged; the node-wide control must scale the
+        # final CLIP application once instead of disappearing in normalization.
+        self.assertTrue(torch.allclose(full_patch, half_patch, atol=1e-6,
+                                       rtol=0.0))
+        self.assertAlmostEqual(full_apply, 1.0)
+        self.assertAlmostEqual(half_apply, 0.5)
 
 
 class TestMultiLoraEndToEnd(unittest.TestCase):
@@ -1464,6 +1799,42 @@ class TestMultiLoraEndToEnd(unittest.TestCase):
         # original chain untouched on the input model (pre-run snapshot)
         self.assertEqual(model.patches[self.KEY], orig_entries[self.KEY])
         self.assertEqual(len(model.patches[self.KEY]), 2)
+
+
+class TestDenseAdditiveSmartCompression(unittest.TestCase):
+    """Smart compression must not make the advertised exact additive mode
+    lossy when a captured dense delta has no trustworthy low-rank bound."""
+
+    KEY = "layer.weight"
+
+    def test_full_rank_dense_delta_above_rank64_remains_exact(self):
+        dim = 80
+        # Exactly full-rank with 16 singular directions beyond the historical
+        # rank-64 floor.  A truncated smart-compression SVD loses those values
+        # by a wide margin, making this a deterministic regression rather than
+        # relying on the numerical rank of a random matrix.
+        dense = torch.diag(torch.linspace(1.0, 2.0, dim))
+        strength = 0.75
+        patches = _chain_patches(
+            (strength, {self.KEY: ("diff", (dense,))}))
+        applied = {}
+        model = _pipeline_model(patches, applied, dim=dim)
+        node = lora_optimizer.LoRAOptimizerInline()
+        node._get_model_keys = lambda m: {"alias_layer": self.KEY}
+
+        settings = _advanced_settings(
+            optimization_mode="additive", patch_compression="smart")
+        node.execute_inline(model, output_strength=1.0, settings=settings)
+
+        self.assertEqual(set(applied["patches"]), {self.KEY})
+        got = lora_optimizer._LoRAMergeBase._expand_patch_to_diff(
+            applied["patches"][self.KEY])
+        expected = dense * strength
+        self.assertTrue(
+            torch.allclose(got, expected, atol=1e-6, rtol=0.0),
+            f"smart compression truncated an unknown-rank additive delta; "
+            f"max err {(got - expected).abs().max().item()}",
+        )
 
 
 # Model-space target keys the loader chain leaves on the ModelPatcher. These
@@ -1971,6 +2342,8 @@ class TestInlineAutoTunerDelegation(unittest.TestCase):
         # ... normalize_keys forced off despite settings "enabled"
         self.assertEqual(seen["normalize_keys"], "disabled")
         self.assertAlmostEqual(seen["output_strength"], 1.0)
+        self.assertTrue(
+            node._autotuner_delegate._force_explicit_clip_multiplier)
 
     def test_return_is_inline_5_tuple_with_fingerprint_prepended(self):
         model = self._model(_chain_patches((0.8, {"a": _adapter(), "b": _adapter()})))
@@ -2145,6 +2518,25 @@ class TestInlineAutoTunerEndToEnd(unittest.TestCase):
         self.assertIn("Detected loader chain", out[2])
         # input model untouched (pre-run snapshot)
         self.assertEqual(model.patches[self.KEY], orig_entries[self.KEY])
+
+
+class TestNormalizedVirtualIdentity(unittest.TestCase):
+    def test_resolved_filename_and_memoized_content_hash_survive_normalization(self):
+        # Inline stamps are resolved before optimize_merge normalizes the
+        # virtual stack.  Dropping either identity field there disconnects the
+        # inline path from file-based memory/community cache entries.
+        item = _virtual_item({"layer.weight": _adapter()}, name="captured")
+        item["_resolved_file_name"] = "styles/example.safetensors"
+        item["_content_hash"] = "0123456789abcdef"
+
+        normalized = lora_optimizer.LoRAOptimizer()._normalize_stack(
+            [item], normalize_keys="disabled")
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["_resolved_file_name"],
+                         "styles/example.safetensors")
+        self.assertEqual(normalized[0]["_content_hash"],
+                         "0123456789abcdef")
 
 
 class TestCapturedContentHash(unittest.TestCase):
@@ -2818,6 +3210,80 @@ class TestInlineStampReadPath(unittest.TestCase):
         self.assertIn("te/style.safetensors", report)
         self.assertEqual(seen["stack"][0]["_resolved_file_name"],
                          "te/style.safetensors")
+
+    def test_stamps_retain_model_only_and_clip_only_holes(self):
+        # Loader #1 contributes MODEL only; loader #2 contributes CLIP only.
+        # Compacting each branch independently would hybridize A's MODEL with
+        # B's CLIP. The longer stamped history supplies the missing slots.
+        stamps = [
+            {"name": "model/a.safetensors", "strength_model": 0.8,
+             "strength_clip": 0.0},
+            {"name": "clip/b.safetensors", "strength_model": 0.0,
+             "strength_clip": 0.6},
+        ]
+        model = _AttachModel(
+            _chain_patches((0.8, {"model.a": _adapter()})), stamps)
+        clip = _AttachClip(_AttachModel(
+            _chain_patches((0.6, {"te.b": _adapter()})), [stamps[1]]))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(lora_optimizer.folder_paths, "get_full_path",
+                               side_effect=self._resolves):
+            node.execute_inline(model, output_strength=1.0, clip=clip)
+
+        self.assertEqual(len(seen["stack"]), 2)
+        first, second = seen["stack"]
+        self.assertEqual(set(first["lora"]), {"model.a"})
+        self.assertEqual(first["clip_strength"], 0.0)
+        self.assertEqual(first["_resolved_file_name"], "model/a.safetensors")
+        self.assertTrue(first["name"].startswith("chain lora #1"))
+        self.assertEqual(set(second["lora"]), {"te.b"})
+        self.assertEqual(second["_resolved_file_name"], "clip/b.safetensors")
+        self.assertTrue(second["name"].startswith("chain lora #2 (clip-only)"))
+
+    def test_conflicting_branch_histories_pass_through_instead_of_hybridizing(self):
+        model_stamp = {"name": "model/a.safetensors", "strength_model": 0.8,
+                       "strength_clip": 0.0}
+        clip_stamp = {"name": "clip/b.safetensors", "strength_model": 0.0,
+                      "strength_clip": 0.6}
+        model = _AttachModel(
+            _chain_patches((0.8, {"model.a": _adapter()})), [model_stamp])
+        clip = _AttachClip(_AttachModel(
+            _chain_patches((0.6, {"te.b": _adapter()})), [clip_stamp]))
+        node = self._node()
+        node.optimize_merge = mock.Mock(
+            side_effect=AssertionError("mismatched files must not be merged"))
+
+        result = node.execute_inline(model, output_strength=1.0, clip=clip)
+        out = self._out(result)
+        self.assertIs(out[0], model)
+        self.assertIs(out[1], clip)
+        self.assertIn("MODEL/CLIP loader identity mismatch", out[2])
+        node.optimize_merge.assert_not_called()
+
+    def test_partial_blocked_slot_withholds_full_file_identity(self):
+        stamp = {"name": "style/a.safetensors", "strength_model": 0.8,
+                 "strength_clip": 0.6}
+        model = _AttachModel(_chain_patches((
+            0.8, {"model.dora": _adapter(dora_scale=torch.ones(8, 1))})),
+            [stamp])
+        clip = _AttachClip(_AttachModel(
+            _chain_patches((0.6, {"te.a": _adapter()})), [stamp]))
+        node = self._node()
+        seen = {}
+        self._capture_merge(node, seen)
+        with mock.patch.object(
+                lora_optimizer.folder_paths, "get_full_path",
+                side_effect=lambda kind, name: (
+                    "/loras/style/a.safetensors"
+                    if name == "style/a.safetensors" else None)):
+            result = node.execute_inline(model, output_strength=1.0, clip=clip)
+            item = seen["stack"][0]
+            self.assertNotIn("_resolved_file_name", item)
+            key = lora_optimizer.LoRAAutoTuner._persistent_lora_key(item)
+        self.assertTrue(key.startswith("captured:"))
+        self.assertIn("style/a.safetensors", self._out(result)[2])
 
     def test_no_attachment_keeps_generic_names_and_captured_identity(self):
         # Regression: unstamped loader (fake patcher lacks the attachment API)
