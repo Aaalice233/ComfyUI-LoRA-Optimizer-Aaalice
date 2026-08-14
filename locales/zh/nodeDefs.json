@@ -13,15 +13,11 @@
       },
       "output_strength": {
         "name": "输出强度",
-        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+        "tooltip": "统一应用于 MODEL 和 CLIP 合并补丁的最终强度；-1 使用自动建议值。"
       },
       "clip": {
         "name": "CLIP",
         "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
-      },
-      "clip_strength_multiplier": {
-        "name": "CLIP 强度倍率",
-        "tooltip": "CLIP 相对模型输出强度的倍率。"
       },
       "settings": {
         "name": "设置",

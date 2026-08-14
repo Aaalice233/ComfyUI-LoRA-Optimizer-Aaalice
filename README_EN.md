@@ -20,7 +20,7 @@ The project exposes exactly three nodes.
 
 ### LoRA Optimizer
 
-Consumes a compatible `LORA_STACK` from LoRA Manager, analyzes and merges it, caches the completed patches, and applies them to MODEL/CLIP.
+Consumes a compatible `LORA_STACK` from LoRA Manager, analyzes and merges it, caches the completed patches, and applies them to MODEL/CLIP. `Output Strength` uniformly scales the final MODEL and CLIP patches while preserving each entry's relative MODEL/CLIP strengths from LoRA Manager.
 
 Outputs the patched MODEL, optional patched CLIP, an analysis report, and `LORA_DATA` for saving.
 

@@ -797,16 +797,47 @@ class PreserveFlagTests(unittest.TestCase):
         dict and raise KeyError: 3."""
         key = lora_optimizer.LoRAOptimizer._compute_cache_key(
             [("loraA", 1.0, 1.0), {"name": "<extracted>", "lora": {}, "strength": 1.5}],
-            output_strength=1.0, clip_strength_multiplier=1.0, auto_strength="disabled",
+            output_strength=1.0, auto_strength="disabled",
         )
         self.assertIsInstance(key, str)
         self.assertEqual(len(key), 16)
         # order-independent: same entries reversed hash identically
         key2 = lora_optimizer.LoRAOptimizer._compute_cache_key(
             [{"name": "<extracted>", "lora": {}, "strength": 1.5}, ("loraA", 1.0, 1.0)],
-            output_strength=1.0, clip_strength_multiplier=1.0, auto_strength="disabled",
+            output_strength=1.0, auto_strength="disabled",
         )
         self.assertEqual(key, key2)
+
+@unittest.skipIf(torch is None, "torch is not installed in this environment")
+class UnifiedOutputStrengthTests(unittest.TestCase):
+    def test_single_lora_scales_model_and_clip_with_output_strength(self):
+        class Model:
+            pass
+
+        class Clip:
+            pass
+
+        model = Model()
+        model.model = object()
+        clip = Clip()
+        optimizer = lora_optimizer.LoRAOptimizer()
+        optimizer.loaded_loras = {"one.safetensors": {}}
+        captured = {}
+
+        def apply(model_arg, clip_arg, _lora, model_strength, clip_strength):
+            captured["model"] = model_strength
+            captured["clip"] = clip_strength
+            return model_arg, clip_arg
+
+        with mock.patch.object(
+                lora_optimizer.comfy.sd, "load_lora_for_models", side_effect=apply):
+            optimizer.optimize_merge(
+                model, [("one.safetensors", 0.8, 0.4)], 1.25, clip=clip,
+                cache_patches="disabled", persistent_cache="disabled")
+
+        self.assertAlmostEqual(captured["model"], 1.0)
+        self.assertAlmostEqual(captured["clip"], 0.5)
+
 
 @unittest.skipIf(torch is None, "torch is not installed in this environment")
 class LoRASettingsNodeTests(unittest.TestCase):
@@ -820,9 +851,10 @@ class LoRASettingsNodeTests(unittest.TestCase):
         self.assertEqual(node.RETURN_TYPES, ("MODEL", "CLIP", "STRING", "LORA_DATA"))
         self.assertEqual(node.RETURN_NAMES, ("model", "clip", "analysis_report", "lora_data"))
 
-    def test_removed_nodes_leave_no_legacy_input_sockets(self):
+    def test_removed_nodes_leave_no_obsolete_input_sockets(self):
         optimizer_inputs = lora_optimizer.LoRAOptimizerSimple.INPUT_TYPES()
         settings_inputs = lora_optimizer.LoRAOptimizerSettings.INPUT_TYPES()
+        self.assertNotIn("clip_strength_multiplier", optimizer_inputs.get("optional", {}))
         self.assertNotIn("tuner_data", optimizer_inputs.get("optional", {}))
         self.assertNotIn("merge_settings", settings_inputs.get("optional", {}))
         self.assertNotIn("merge_strategy_override", settings_inputs.get("optional", {}))

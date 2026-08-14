@@ -20,7 +20,7 @@
 
 ### LoRA Optimizer
 
-接收 LoRA Manager 或其他兼容节点输出的 `LORA_STACK`，完成分析、合并、缓存并把结果应用到 MODEL/CLIP。
+接收 LoRA Manager 或其他兼容节点输出的 `LORA_STACK`，完成分析、合并、缓存并把结果应用到 MODEL/CLIP。`输出强度` 会统一缩放最终 MODEL 和 CLIP 补丁，同时保留 LoRA Manager 提供的每项 MODEL/CLIP 相对比例。
 
 输出：
 

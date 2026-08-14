@@ -18,7 +18,7 @@ spec.loader.exec_module(module)
 
 ZH_NAMES = {
     "model": "模型", "lora_stack": "LoRA 堆栈", "output_strength": "输出强度",
-    "clip": "CLIP", "clip_strength_multiplier": "CLIP 强度倍率", "settings": "设置",
+    "clip": "CLIP", "settings": "设置",
     "analysis_report": "分析报告", "lora_data": "LoRA 数据", "auto_strength": "自动强度",
     "optimization_mode": "优化模式", "merge_refinement": "合并精炼", "sparsification": "稀疏化",
     "sparsification_density": "稀疏密度", "dare_dampening": "DARE 阻尼",
@@ -36,9 +36,8 @@ ZH_NAMES = {
 ZH_TOOLTIPS = {
     "model": "连接要应用合并 LoRA 的基础模型。",
     "lora_stack": "连接 LoRA Manager 或其他兼容节点输出的 LORA_STACK。",
-    "output_strength": "合并结果的总强度；-1 使用自动建议值。",
+    "output_strength": "统一应用于 MODEL 和 CLIP 合并补丁的最终强度；-1 使用自动建议值。",
     "clip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。",
-    "clip_strength_multiplier": "CLIP 相对模型输出强度的倍率。",
     "settings": "连接 LoRA Optimizer Settings；未连接时使用推荐默认值。",
     "auto_strength": "合并多个 LoRA 时自动降低单项强度，减少过饱和和失真。",
     "optimization_mode": "按层自动决策、全局统一决策，或直接加法合并。",

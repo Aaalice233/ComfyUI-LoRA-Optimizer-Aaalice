@@ -13,15 +13,11 @@
       },
       "output_strength": {
         "name": "Output Strength",
-        "tooltip": "Final merged strength; -1 lets the optimizer choose a safe value."
+        "tooltip": "Final strength applied uniformly to merged MODEL and CLIP patches; -1 uses the optimizer's suggested value."
       },
       "clip": {
         "name": "Clip",
         "tooltip": "Optional text encoder for LoRAs that contain CLIP patches."
-      },
-      "clip_strength_multiplier": {
-        "name": "Clip Strength Multiplier",
-        "tooltip": "Strength multiplier applied to merged CLIP patches."
       },
       "settings": {
         "name": "Settings",

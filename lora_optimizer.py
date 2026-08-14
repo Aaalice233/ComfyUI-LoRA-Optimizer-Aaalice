@@ -1781,9 +1781,7 @@ class _LoRAMergeBase(ChunkedOptimizerMixin):
 
     @staticmethod
     def _resolve_branch_strength(item, is_clip):
-        """Base per-LoRA strength for the target branch before auto-scaling.
-        The global clip_strength_multiplier is deliberately NOT applied here —
-        it scales the merged clip patches once at add_patches time."""
+        """Base per-LoRA strength for the target branch before auto-scaling."""
         if is_clip:
             if item["clip_strength"] is not None:
                 return item["clip_strength"]
@@ -1827,8 +1825,8 @@ class _LoRAMergeBase(ChunkedOptimizerMixin):
         return masked
 
     def _prepare_group_diffs(self, target_group, active_loras, model, clip, device,
-                             clip_strength_multiplier=1.0, merge_refinement="none",
-                             auto_scale=1.0, force_cpu=False):
+                             merge_refinement="none", auto_scale=1.0,
+                             force_cpu=False):
         """
         Aggregate all alias contributions that resolve to the same target weight.
         Returns metadata plus one diff per contributing LoRA after key_filter and
@@ -3904,10 +3902,10 @@ class _LoRAMergeBase(ChunkedOptimizerMixin):
           Used by Efficiency Nodes, Comfyroll, and other popular node packs.
           LoRAs are loaded from disk (cached in self.loaded_loras).
         - Preloaded dicts: [{"name": str, "lora": dict, "strength": float}, ...]
-          Already loaded, clip_strength defaults to None (use global multiplier).
+          Already loaded; clip_strength defaults to the MODEL strength.
 
         Returns list of dicts with keys: name, lora, strength, clip_strength.
-        clip_strength is None when the global multiplier should be used.
+        clip_strength is None when the MODEL strength should be reused.
         """
         if not lora_stack:
             return []
@@ -4110,7 +4108,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         self._detected_arch = None
 
     @staticmethod
-    def _compute_cache_key(lora_stack, output_strength, clip_strength_multiplier, auto_strength, optimization_mode="per_prefix", patch_compression="smart", svd_device="gpu", normalize_keys="disabled", sparsification="disabled", sparsification_density=0.7, dare_dampening=0.0, merge_refinement="none", strategy_set="full", architecture_preset="auto", auto_strength_floor=-1.0, decision_smoothing=0.25, smooth_slerp_gate=False, star_eta=100.0, tame_layers=0.0, tame_threshold=0.3):
+    def _compute_cache_key(lora_stack, output_strength, auto_strength, optimization_mode="per_prefix", patch_compression="smart", svd_device="gpu", normalize_keys="disabled", sparsification="disabled", sparsification_density=0.7, dare_dampening=0.0, merge_refinement="none", strategy_set="full", architecture_preset="auto", auto_strength_floor=-1.0, decision_smoothing=0.25, smooth_slerp_gate=False, star_eta=100.0, tame_layers=0.0, tame_threshold=0.3):
         """
         Build a deterministic SHA-256 hash (16 hex chars) from the stack
         configuration. Used by IS_CHANGED to let ComfyUI skip re-execution
@@ -4139,7 +4137,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
                     entries.append((str(entry.get("name", "")), float(entry.get("strength", 0)), cs, cm, kf, pres))
             entries.sort()
             h.update(json.dumps(entries).encode())
-        h.update(f"|os={output_strength}|csm={clip_strength_multiplier}|as={auto_strength}|om={optimization_mode}|cp={patch_compression}|sd={svd_device}|nk={normalize_keys}|sp={sparsification}|spd={sparsification_density}|dd={dare_dampening}|mq={merge_refinement}|bp={strategy_set}|ap={architecture_preset}|asf={auto_strength_floor}|ds={decision_smoothing}|ssg={smooth_slerp_gate}".encode())
+        h.update(f"|os={output_strength}|as={auto_strength}|om={optimization_mode}|cp={patch_compression}|sd={svd_device}|nk={normalize_keys}|sp={sparsification}|spd={sparsification_density}|dd={dare_dampening}|mq={merge_refinement}|bp={strategy_set}|ap={architecture_preset}|asf={auto_strength_floor}|ds={decision_smoothing}|ssg={smooth_slerp_gate}".encode())
         # Fold per-LoRA cleaning ONLY when active, so default-off keys stay
         # byte-identical to pre-feature keys (existing caches remain valid).
         if star_eta < 100.0 or tame_layers > 0.0:
@@ -4223,7 +4221,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
     @classmethod
     def IS_CHANGED(cls, model, lora_stack, output_strength, clip=None,
-                   clip_strength_multiplier=1.0, auto_strength="enabled",
+                   auto_strength="enabled",
                    auto_strength_floor=-1.0,
                    free_vram_between_passes="disabled", vram_budget=0.0,
                    optimization_mode="per_prefix",
@@ -4236,8 +4234,8 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
                    decision_smoothing=0.25, smooth_slerp_gate=False,
                    star_eta=100.0, tame_layers=0.0, tame_threshold=0.3):
         base_key = cls._compute_cache_key(
-            lora_stack, output_strength, clip_strength_multiplier,
-            auto_strength, optimization_mode, patch_compression, svd_device,
+            lora_stack, output_strength, auto_strength, optimization_mode,
+            patch_compression, svd_device,
             normalize_keys, sparsification, sparsification_density,
             dare_dampening, merge_refinement,
             strategy_set, architecture_preset, auto_strength_floor,
@@ -4249,7 +4247,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
     @torch.no_grad()
     def _analyze_target_group(self, target_group, active_loras, model, clip, device,
-                              clip_strength_multiplier=1.0,
                               merge_refinement="none", n_magnitude_samples=1000):
         """
         Pass 1 analysis for one resolved target group. All aliases that hit the
@@ -4288,7 +4285,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
         prepared = self._prepare_group_diffs(
             target_group, active_loras, model, clip, device,
-            clip_strength_multiplier=clip_strength_multiplier,
             merge_refinement=merge_refinement,
             force_cpu=force_cpu_source,
         )
@@ -4362,8 +4358,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         )
 
     def _run_group_analysis(self, target_groups, active_loras, model, clip,
-                            compute_device, clip_strength_multiplier=1.0,
-                            merge_refinement="none",
+                            compute_device, merge_refinement="none",
                             decision_smoothing=0.0, progress_cb=None):
         """Run Pass 1 once and retain only scalar statistics and small samples."""
         self._interrupt_check()
@@ -4476,7 +4471,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
                 self._interrupt_check()
                 result = self._analyze_target_group(
                     target_group, active_loras, model, clip, compute_device,
-                    clip_strength_multiplier=clip_strength_multiplier,
                     merge_refinement=merge_refinement)
                 collect(result)
                 if progress_cb is not None:
@@ -4490,8 +4484,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
                     self._interrupt_check()
                     future = executor.submit(
                         self._analyze_target_group, target_group, active_loras,
-                        model, clip, compute_device, clip_strength_multiplier,
-                        merge_refinement)
+                        model, clip, compute_device, merge_refinement)
                     futures[future] = target_group["label_prefix"]
                 pending = set(futures)
                 while pending:
@@ -4695,7 +4688,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         }
 
     def _compute_auto_strengths(self, active_loras, branch_energy,
-                                clip_strength_multiplier=1.0, arch_preset=None,
+                                arch_preset=None,
                                 detected_arch=None, auto_strength_floor=-1.0,
                                 is_full_rank=False):
         """
@@ -4745,10 +4738,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
             "original_model_strengths": model_strengths,
             "original_clip_strengths": clip_strengths,
             "names": [item["name"] for item in active_loras],
-            "clip_uses_global_multiplier": [
-                item["clip_strength"] is None for item in active_loras
-            ],
-            "clip_strength_multiplier": clip_strength_multiplier,
             "reasoning": reasoning,
         }
 
@@ -5299,8 +5288,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
                     clip_orig = auto_strength_info["original_clip_strengths"][i]
                     clip_new = auto_strength_info["clip_strengths"][i]
                     line += f", clip {clip_orig} -> {clip_new:.4f}"
-                    if auto_strength_info.get("clip_uses_global_multiplier", [False] * len(auto_strength_info["names"]))[i]:
-                        line += " (pre-global multiplier)"
                 lines.append(line)
             for r in auto_strength_info["reasoning"]:
                 lines.append(f"  {r}")
@@ -5483,7 +5470,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
             lines.append(f"  Output strength: {os_val:.2f} (auto — suggested max)")
         else:
             lines.append(f"  Output strength: {os_val}")
-        lines.append(f"  CLIP strength: {merge_summary['clip_strength']}")
+        lines.append(f"  Effective CLIP strength: {merge_summary['clip_strength']}")
         if not auto_os and merge_summary.get('suggested_max_strength') is not None:
             sms = merge_summary['suggested_max_strength']
             lines.append(f"  Suggested max output_strength: {sms:.2f}")
@@ -5497,7 +5484,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         return "\n".join(lines)
 
     def optimize_merge(self, model, lora_stack, output_strength, clip=None,
-                       clip_strength_multiplier=1.0, auto_strength="enabled",
+                       auto_strength="enabled",
                        auto_strength_floor=-1.0,
                        free_vram_between_passes="disabled", vram_budget=0.0,
                        optimization_mode="per_prefix", cache_patches="enabled",
@@ -5541,8 +5528,8 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
             return (model, clip, "No LoRAs in stack.", None)
 
         config_cache_key = self._compute_cache_key(
-            lora_stack, output_strength, clip_strength_multiplier,
-            auto_strength, optimization_mode, patch_compression,
+            lora_stack, output_strength, auto_strength, optimization_mode,
+            patch_compression,
             svd_device, normalize_keys, sparsification,
             sparsification_density, dare_dampening,
             merge_refinement, strategy_set,
@@ -5618,7 +5605,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
             if item["clip_strength"] is not None:
                 clip_str = item["clip_strength"]
             else:
-                clip_str = strength * clip_strength_multiplier
+                clip_str = strength
             new_model, new_clip = comfy.sd.load_lora_for_models(
                 model, clip, lora_dict, resolved_output_strength * strength, resolved_output_strength * clip_str
             )
@@ -5693,7 +5680,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
         analysis_data = self._run_group_analysis(
             target_groups, active_loras, model, clip, compute_device,
-            clip_strength_multiplier=clip_strength_multiplier,
             merge_refinement=merge_refinement,
             decision_smoothing=decision_smoothing,
             progress_cb=_p1_progress,
@@ -5884,9 +5870,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         clip_auto_scale = 1.0
         if auto_strength == "enabled":
             auto_strength_info = self._compute_auto_strengths(
-                active_loras, branch_energy,
-                clip_strength_multiplier=clip_strength_multiplier,
-                arch_preset=arch_preset,
+                active_loras, branch_energy, arch_preset=arch_preset,
                 detected_arch=getattr(self, '_detected_arch', None),
                 auto_strength_floor=auto_strength_floor,
                 is_full_rank=is_full_rank,
@@ -6208,7 +6192,6 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
             prepared = self._prepare_group_diffs(
                 target_group, active_loras, model, clip, compute_device,
-                clip_strength_multiplier=clip_strength_multiplier,
                 merge_refinement=merge_refinement,
                 auto_scale=model_auto_scale if not is_clip_key else 1.0,
                 force_cpu=force_cpu_source,
@@ -6561,13 +6544,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
             output_strength = 1.0
             logging.info("[LoRA Optimizer] Auto output_strength: no suggestion available, using 1.0")
 
-        all_explicit_clip = all(item["clip_strength"] is not None for item in active_loras)
-        force_clip_multiplier = bool(
-            getattr(self, "_force_explicit_clip_multiplier", False))
-        if all_explicit_clip and not force_clip_multiplier:
-            clip_strength_out = output_strength * clip_auto_scale
-        else:
-            clip_strength_out = output_strength * clip_strength_multiplier * clip_auto_scale
+        clip_strength_out = output_strength * clip_auto_scale
 
         self._interrupt_check()
         if model is not None and len(model_patches) > 0:
@@ -6774,11 +6751,10 @@ class LoRAOptimizerSimple(_LoRAOptimizerEngine):
             "required": {
                 "model": ("MODEL", {"tooltip": "Base model that receives the optimized LoRA patches."}),
                 "lora_stack": ("LORA_STACK", {"tooltip": "LoRA stack supplied by LoRA Manager or another compatible stack provider."}),
-                "output_strength": ("FLOAT", {"default": 1.0, "min": -1.0, "max": 10.0, "step": 0.05, "tooltip": "Final merged strength; -1 lets the optimizer choose a safe value."}),
+                "output_strength": ("FLOAT", {"default": 1.0, "min": -1.0, "max": 10.0, "step": 0.05, "tooltip": "Final strength applied uniformly to merged MODEL and CLIP patches; -1 uses the optimizer's suggested value."}),
             },
             "optional": {
                 "clip": ("CLIP", {"tooltip": "Optional text encoder for LoRAs that contain CLIP patches."}),
-                "clip_strength_multiplier": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.05, "tooltip": "Strength multiplier applied to merged CLIP patches."}),
                 "settings": ("OPTIMIZER_SETTINGS", {"tooltip": "Optional LoRA Optimizer Settings; recommended defaults are used when disconnected."}),
             },
         }
@@ -6814,23 +6790,18 @@ class LoRAOptimizerSimple(_LoRAOptimizerEngine):
     )
 
     def execute_simple(self, model, lora_stack, output_strength,
-                       clip=None, clip_strength_multiplier=1.0,
-                       settings=None):
+                       clip=None, settings=None):
         kwargs = (self._advanced_merge_kwargs(settings)
                   if settings is not None else dict(self._SIMPLE_DEFAULTS))
         return super().optimize_merge(
-            model, lora_stack, output_strength,
-            clip=clip, clip_strength_multiplier=clip_strength_multiplier,
-            **kwargs,
+            model, lora_stack, output_strength, clip=clip, **kwargs,
         )
 
     @classmethod
     def IS_CHANGED(cls, model, lora_stack, output_strength,
-                   clip=None, clip_strength_multiplier=1.0,
-                   settings=None):
+                   clip=None, settings=None):
         base = _LoRAOptimizerEngine.IS_CHANGED(
-            model, lora_stack, output_strength,
-            clip=clip, clip_strength_multiplier=clip_strength_multiplier,
+            model, lora_stack, output_strength, clip=clip,
             **cls._SIMPLE_DEFAULTS,
         )
         if settings is not None:
