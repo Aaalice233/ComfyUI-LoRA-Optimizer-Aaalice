@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import { t } from "./i18n.js";
 
 const HIDDEN_TAG = "loraopt_hidden";
 const origProps = {};
@@ -457,7 +458,7 @@ app.registerExtension({
             const extras = [
                 null,
                 {
-                    content: `Remove LoRA #${slot}`,
+                    content: t("removeLora", { index: slot }),
                     callback() {
                         for (let i = slot; i < count; i++) {
                             copySlotValues(node_, i + 1, i);
@@ -473,7 +474,7 @@ app.registerExtension({
             ];
             if (slot > 1) {
                 extras.push({
-                    content: `Move LoRA #${slot} up`,
+                    content: t("moveLoraUp", { index: slot }),
                     callback() {
                         const tmp = {};
                         for (const base of SLOT_WIDGET_NAMES) {

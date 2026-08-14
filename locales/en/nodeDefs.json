@@ -1,0 +1,2461 @@
+{
+  "LoRAStack": {
+    "display_name": "LoRA Stack",
+    "description": "Add one LoRA and its strength, conflict, and key-filter rules to a stack.",
+    "inputs": {
+      "lora_name": {
+        "name": "LoRA Name",
+        "tooltip": "Pick a LoRA file to add to the stack. LoRAs are style/character/concept add-ons trained on top of a base model."
+      },
+      "strength": {
+        "name": "Strength"
+      },
+      "conflict_mode": {
+        "name": "Conflict Mode",
+        "tooltip": "Filter where this LoRA applies based on conflicts with other LoRAs. 'all': apply everywhere (default). 'low_conflict': only apply where this LoRA agrees with the majority — safe, avoids contested weights. 'high_conflict': only apply where this LoRA disagrees — forces this LoRA to dominate contested regions.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter": {
+        "name": "Key Filter",
+        "tooltip": "Filter which keys this LoRA contributes. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step audio modules). 'no_audio': only non-audio (video) layers. e.g. merge two LTX LoRAs but keep one's sound: set the other to 'no_audio'.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve": {
+        "name": "Preserve",
+        "tooltip": "Mark this as a STYLE LoRA to protect it in conflict merges. When on, this LoRA is never trimmed by sparsification and is exempt from TIES sign-election (which otherwise deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved content merge. Use when merging a style LoRA with a character/content LoRA and the style keeps disappearing."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect another LoRA Stack node here to chain multiple LoRAs together."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      }
+    }
+  },
+  "LoRAStackDynamic": {
+    "display_name": "LoRA Stack (Dynamic)",
+    "description": "Configure up to ten LoRAs in one node with simple/advanced and dropdown/text modes.",
+    "inputs": {
+      "settings_visibility": {
+        "name": "Settings Visibility",
+        "tooltip": "Simple: one strength slider per LoRA. Advanced: separate model/clip strength, conflict mode, and key filter per LoRA.",
+        "options": {
+          "simple": "Simple",
+          "advanced": "Advanced"
+        }
+      },
+      "input_mode": {
+        "name": "Input Mode",
+        "tooltip": "Dropdown: pick LoRAs from a list. Text: type LoRA names or connect text nodes (short names are auto-resolved).",
+        "options": {
+          "dropdown": "Dropdown",
+          "text": "Text"
+        }
+      },
+      "lora_count": {
+        "name": "LoRA Count",
+        "tooltip": "How many LoRA slots to show. Increase to add more LoRAs."
+      },
+      "enabled_1": {
+        "name": "Enabled #1",
+        "tooltip": "Enable or disable LoRA #1 without removing it from the list."
+      },
+      "lora_name_1": {
+        "name": "LoRA Name #1",
+        "tooltip": "LoRA #1 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_1": {
+        "name": "LoRA Name Text #1",
+        "tooltip": "LoRA #1 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_1": {
+        "name": "Strength #1",
+        "tooltip": "How strongly LoRA #1 affects the output. 1.0 = full effect."
+      },
+      "model_strength_1": {
+        "name": "Model Strength #1",
+        "tooltip": "How strongly LoRA #1 affects image generation (visual style, composition)."
+      },
+      "clip_strength_1": {
+        "name": "Clip Strength #1",
+        "tooltip": "How strongly LoRA #1 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_1": {
+        "name": "Conflict Mode #1",
+        "tooltip": "LoRA #1 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_1": {
+        "name": "Key Filter #1",
+        "tooltip": "LoRA #1 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_1": {
+        "name": "Preserve #1",
+        "tooltip": "Mark LoRA #1 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_2": {
+        "name": "Enabled #2",
+        "tooltip": "Enable or disable LoRA #2 without removing it from the list."
+      },
+      "lora_name_2": {
+        "name": "LoRA Name #2",
+        "tooltip": "LoRA #2 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_2": {
+        "name": "LoRA Name Text #2",
+        "tooltip": "LoRA #2 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_2": {
+        "name": "Strength #2",
+        "tooltip": "How strongly LoRA #2 affects the output. 1.0 = full effect."
+      },
+      "model_strength_2": {
+        "name": "Model Strength #2",
+        "tooltip": "How strongly LoRA #2 affects image generation (visual style, composition)."
+      },
+      "clip_strength_2": {
+        "name": "Clip Strength #2",
+        "tooltip": "How strongly LoRA #2 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_2": {
+        "name": "Conflict Mode #2",
+        "tooltip": "LoRA #2 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_2": {
+        "name": "Key Filter #2",
+        "tooltip": "LoRA #2 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_2": {
+        "name": "Preserve #2",
+        "tooltip": "Mark LoRA #2 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_3": {
+        "name": "Enabled #3",
+        "tooltip": "Enable or disable LoRA #3 without removing it from the list."
+      },
+      "lora_name_3": {
+        "name": "LoRA Name #3",
+        "tooltip": "LoRA #3 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_3": {
+        "name": "LoRA Name Text #3",
+        "tooltip": "LoRA #3 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_3": {
+        "name": "Strength #3",
+        "tooltip": "How strongly LoRA #3 affects the output. 1.0 = full effect."
+      },
+      "model_strength_3": {
+        "name": "Model Strength #3",
+        "tooltip": "How strongly LoRA #3 affects image generation (visual style, composition)."
+      },
+      "clip_strength_3": {
+        "name": "Clip Strength #3",
+        "tooltip": "How strongly LoRA #3 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_3": {
+        "name": "Conflict Mode #3",
+        "tooltip": "LoRA #3 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_3": {
+        "name": "Key Filter #3",
+        "tooltip": "LoRA #3 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_3": {
+        "name": "Preserve #3",
+        "tooltip": "Mark LoRA #3 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_4": {
+        "name": "Enabled #4",
+        "tooltip": "Enable or disable LoRA #4 without removing it from the list."
+      },
+      "lora_name_4": {
+        "name": "LoRA Name #4",
+        "tooltip": "LoRA #4 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_4": {
+        "name": "LoRA Name Text #4",
+        "tooltip": "LoRA #4 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_4": {
+        "name": "Strength #4",
+        "tooltip": "How strongly LoRA #4 affects the output. 1.0 = full effect."
+      },
+      "model_strength_4": {
+        "name": "Model Strength #4",
+        "tooltip": "How strongly LoRA #4 affects image generation (visual style, composition)."
+      },
+      "clip_strength_4": {
+        "name": "Clip Strength #4",
+        "tooltip": "How strongly LoRA #4 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_4": {
+        "name": "Conflict Mode #4",
+        "tooltip": "LoRA #4 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_4": {
+        "name": "Key Filter #4",
+        "tooltip": "LoRA #4 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_4": {
+        "name": "Preserve #4",
+        "tooltip": "Mark LoRA #4 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_5": {
+        "name": "Enabled #5",
+        "tooltip": "Enable or disable LoRA #5 without removing it from the list."
+      },
+      "lora_name_5": {
+        "name": "LoRA Name #5",
+        "tooltip": "LoRA #5 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_5": {
+        "name": "LoRA Name Text #5",
+        "tooltip": "LoRA #5 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_5": {
+        "name": "Strength #5",
+        "tooltip": "How strongly LoRA #5 affects the output. 1.0 = full effect."
+      },
+      "model_strength_5": {
+        "name": "Model Strength #5",
+        "tooltip": "How strongly LoRA #5 affects image generation (visual style, composition)."
+      },
+      "clip_strength_5": {
+        "name": "Clip Strength #5",
+        "tooltip": "How strongly LoRA #5 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_5": {
+        "name": "Conflict Mode #5",
+        "tooltip": "LoRA #5 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_5": {
+        "name": "Key Filter #5",
+        "tooltip": "LoRA #5 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_5": {
+        "name": "Preserve #5",
+        "tooltip": "Mark LoRA #5 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_6": {
+        "name": "Enabled #6",
+        "tooltip": "Enable or disable LoRA #6 without removing it from the list."
+      },
+      "lora_name_6": {
+        "name": "LoRA Name #6",
+        "tooltip": "LoRA #6 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_6": {
+        "name": "LoRA Name Text #6",
+        "tooltip": "LoRA #6 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_6": {
+        "name": "Strength #6",
+        "tooltip": "How strongly LoRA #6 affects the output. 1.0 = full effect."
+      },
+      "model_strength_6": {
+        "name": "Model Strength #6",
+        "tooltip": "How strongly LoRA #6 affects image generation (visual style, composition)."
+      },
+      "clip_strength_6": {
+        "name": "Clip Strength #6",
+        "tooltip": "How strongly LoRA #6 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_6": {
+        "name": "Conflict Mode #6",
+        "tooltip": "LoRA #6 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_6": {
+        "name": "Key Filter #6",
+        "tooltip": "LoRA #6 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_6": {
+        "name": "Preserve #6",
+        "tooltip": "Mark LoRA #6 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_7": {
+        "name": "Enabled #7",
+        "tooltip": "Enable or disable LoRA #7 without removing it from the list."
+      },
+      "lora_name_7": {
+        "name": "LoRA Name #7",
+        "tooltip": "LoRA #7 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_7": {
+        "name": "LoRA Name Text #7",
+        "tooltip": "LoRA #7 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_7": {
+        "name": "Strength #7",
+        "tooltip": "How strongly LoRA #7 affects the output. 1.0 = full effect."
+      },
+      "model_strength_7": {
+        "name": "Model Strength #7",
+        "tooltip": "How strongly LoRA #7 affects image generation (visual style, composition)."
+      },
+      "clip_strength_7": {
+        "name": "Clip Strength #7",
+        "tooltip": "How strongly LoRA #7 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_7": {
+        "name": "Conflict Mode #7",
+        "tooltip": "LoRA #7 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_7": {
+        "name": "Key Filter #7",
+        "tooltip": "LoRA #7 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_7": {
+        "name": "Preserve #7",
+        "tooltip": "Mark LoRA #7 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_8": {
+        "name": "Enabled #8",
+        "tooltip": "Enable or disable LoRA #8 without removing it from the list."
+      },
+      "lora_name_8": {
+        "name": "LoRA Name #8",
+        "tooltip": "LoRA #8 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_8": {
+        "name": "LoRA Name Text #8",
+        "tooltip": "LoRA #8 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_8": {
+        "name": "Strength #8",
+        "tooltip": "How strongly LoRA #8 affects the output. 1.0 = full effect."
+      },
+      "model_strength_8": {
+        "name": "Model Strength #8",
+        "tooltip": "How strongly LoRA #8 affects image generation (visual style, composition)."
+      },
+      "clip_strength_8": {
+        "name": "Clip Strength #8",
+        "tooltip": "How strongly LoRA #8 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_8": {
+        "name": "Conflict Mode #8",
+        "tooltip": "LoRA #8 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_8": {
+        "name": "Key Filter #8",
+        "tooltip": "LoRA #8 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_8": {
+        "name": "Preserve #8",
+        "tooltip": "Mark LoRA #8 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_9": {
+        "name": "Enabled #9",
+        "tooltip": "Enable or disable LoRA #9 without removing it from the list."
+      },
+      "lora_name_9": {
+        "name": "LoRA Name #9",
+        "tooltip": "LoRA #9 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_9": {
+        "name": "LoRA Name Text #9",
+        "tooltip": "LoRA #9 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_9": {
+        "name": "Strength #9",
+        "tooltip": "How strongly LoRA #9 affects the output. 1.0 = full effect."
+      },
+      "model_strength_9": {
+        "name": "Model Strength #9",
+        "tooltip": "How strongly LoRA #9 affects image generation (visual style, composition)."
+      },
+      "clip_strength_9": {
+        "name": "Clip Strength #9",
+        "tooltip": "How strongly LoRA #9 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_9": {
+        "name": "Conflict Mode #9",
+        "tooltip": "LoRA #9 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_9": {
+        "name": "Key Filter #9",
+        "tooltip": "LoRA #9 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_9": {
+        "name": "Preserve #9",
+        "tooltip": "Mark LoRA #9 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_10": {
+        "name": "Enabled #10",
+        "tooltip": "Enable or disable LoRA #10 without removing it from the list."
+      },
+      "lora_name_10": {
+        "name": "LoRA Name #10",
+        "tooltip": "LoRA #10 — pick a LoRA file or leave as 'None' to skip this slot."
+      },
+      "lora_name_text_10": {
+        "name": "LoRA Name Text #10",
+        "tooltip": "LoRA #10 — type a LoRA filename (without extension or path), a full relative path, or 'None' to skip. Accepts text node connections."
+      },
+      "strength_10": {
+        "name": "Strength #10",
+        "tooltip": "How strongly LoRA #10 affects the output. 1.0 = full effect."
+      },
+      "model_strength_10": {
+        "name": "Model Strength #10",
+        "tooltip": "How strongly LoRA #10 affects image generation (visual style, composition)."
+      },
+      "clip_strength_10": {
+        "name": "Clip Strength #10",
+        "tooltip": "How strongly LoRA #10 affects text understanding (prompt interpretation)."
+      },
+      "conflict_mode_10": {
+        "name": "Conflict Mode #10",
+        "tooltip": "LoRA #10 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_10": {
+        "name": "Key Filter #10",
+        "tooltip": "LoRA #10 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_10": {
+        "name": "Preserve #10",
+        "tooltip": "Mark LoRA #10 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect another LoRA Stack node here to add even more LoRAs to the list."
+      },
+      "base_model_filter": {
+        "name": "Base Model Filter",
+        "tooltip": "Filter LoRA dropdowns by base model type (dropdown mode only). Requires ComfyUI-Lora-Manager installed.",
+        "options": {
+          "All": "All"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      }
+    }
+  },
+  "LoRAOptimizer": {
+    "display_name": "LoRA Optimizer (Legacy)",
+    "description": "Analyze and merge a LoRA stack with all legacy advanced controls exposed.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "Your base model (e.g. SDXL, Flux). The merged LoRAs will be applied to it."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect a LoRA Stack node here. This is the list of LoRAs you want to merge together."
+      },
+      "output_strength": {
+        "name": "Output Strength",
+        "tooltip": "Master volume for the merged result. 1.0 = full effect, 0.5 = half, 0 = disabled. Set to -1 for auto: uses the suggested max strength (compensates for energy lost during merge)."
+      },
+      "clip": {
+        "name": "Clip",
+        "tooltip": "The text encoder. Connect this so LoRAs can also affect how your prompts are understood. Leave empty for video models that don't use CLIP."
+      },
+      "clip_strength_multiplier": {
+        "name": "Clip Strength Multiplier",
+        "tooltip": "How strongly LoRAs affect text understanding, relative to output_strength. At 1.0, CLIP uses the same strength as the model. Lower values reduce LoRA influence on prompt interpretation while keeping the visual effect."
+      },
+      "auto_strength": {
+        "name": "Auto Strength",
+        "tooltip": "Automatically turns down individual LoRA strengths when combining many LoRAs to avoid oversaturated or distorted results. Useful when stacking 3+ LoRAs.",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "Auto Strength Floor",
+        "tooltip": "Floor on how much auto-strength may shrink your LoRA strengths — a uniform down-scale multiplier (never scales UP, never flips signs). 1.0 = don't shrink at all, 0.5 = shrink to at most half, 0 = no floor at all (remove the limit — auto-strength may shrink strengths all the way down), -1 = architecture-aware default (higher for motion-heavy video, lower for image models). Applies to negative LoRAs by magnitude (−1.75 → −1.49 at 0.85, sign kept) and to >1.0 strengths. An explicit value ≥0 applies to EVERY stack, not just orthogonal ones."
+      },
+      "free_vram_between_passes": {
+        "name": "Free VRAM Between Passes",
+        "tooltip": "Frees GPU memory between processing steps. Enable if you're running out of VRAM. Barely affects speed.",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "vram_budget": {
+        "name": "VRAM Budget",
+        "tooltip": "Fraction of free VRAM to use for storing merged patches. 0 = all CPU (default), 1.0 = use all free VRAM. Reduces RAM usage on GPU systems."
+      },
+      "optimization_mode": {
+        "name": "Optimization Mode",
+        "tooltip": "How the optimizer decides to combine LoRAs. 'per_prefix' (recommended): automatically picks the best method for each layer. 'global': uses one method everywhere. 'additive': simple weighted addition with no conflict resolution — preserves all weights exactly. Use for edit, distillation, or DPO LoRAs. (Previously: 'additive' was called 'weighted_sum_only'.)",
+        "options": {
+          "per_prefix": "Per Prefix",
+          "global": "Global",
+          "additive": "Additive"
+        }
+      },
+      "cache_patches": {
+        "name": "Cache Patches",
+        "tooltip": "Keep the merge result in memory so re-running the workflow is instant (no re-merge needed). Disable to save RAM — recommended for large video models like Wan or LTX.",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "patch_compression": {
+        "name": "Patch Compression",
+        "tooltip": "Shrink the merged result to use less memory. 'smart' (recommended): compresses layers where it's lossless, skips layers that already went through rank reduction. 'aggressive': compresses everything including rank-reduced layers — saves the most memory but slightly lossy. 'disabled': no compression, uses more RAM. (Previously: this setting was called 'compress_patches' with values non_ties/all/disabled.)",
+        "options": {
+          "smart": "Smart",
+          "aggressive": "Aggressive",
+          "disabled": "Disabled"
+        }
+      },
+      "svd_device": {
+        "name": "SVD Device",
+        "tooltip": "Where to run compression math. GPU is much faster (10-50x). Switch to CPU only if you get out-of-memory errors during the merge.",
+        "options": {
+          "gpu": "GPU",
+          "cpu": "CPU"
+        }
+      },
+      "normalize_keys": {
+        "name": "Normalize Keys",
+        "tooltip": "Remaps LoRA keys to a canonical format so LoRAs from different training tools (Kohya, AI-Toolkit, PEFT, Musubi Tuner) can be merged correctly. Also splits fused QKV into separate Q/K/V for per-component conflict analysis. Recommended to keep enabled — disable only if it causes issues with unusual LoRA formats.",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "sparsification": {
+        "name": "Sparsification",
+        "tooltip": "Reduces interference between LoRAs by sparsifying weights before merging. DARE: random dropout everywhere. DELLA: magnitude-aware dropout everywhere. Conflict variants (recommended): same algorithms but ONLY applied where LoRAs push in opposite directions — unique contributions are preserved untouched.",
+        "options": {
+          "disabled": "Disabled",
+          "dare": "DARE",
+          "della": "DELLA",
+          "dare_conflict": "DARE Conflict",
+          "della_conflict": "DELLA Conflict"
+        }
+      },
+      "sparsification_density": {
+        "name": "Sparsification Density",
+        "tooltip": "What percentage of weights to keep (0.7 = keep 70%, drop 30%). Lower values drop more weights — reduces interference but may lose detail. At 1.0, no weights are dropped (equivalent to disabled). Note: in TIES mode, sparsification replaces the trim step — setting density to 1.0 disables both sparsification AND trimming."
+      },
+      "dare_dampening": {
+        "name": "DARE Dampening",
+        "tooltip": "DAREx dampening: reduces the aggressiveness of DARE's rescaling factor. At 0.0 (default): standard DARE rescaling (1/density). At higher values: dampened rescaling that reduces noise amplification at low density values. Only affects DARE/DARE-conflict modes. Based on DAREx (ICLR 2025)."
+      },
+      "merge_refinement": {
+        "name": "Merge Refinement",
+        "tooltip": "Optional preprocessing steps applied to weight diffs before merging. none: merge as-is, no extra processing. refine: adds direction orthogonalization + selfish weight protection (TALL-masks) to reduce interference between LoRAs (minimal extra compute). full: adds SVD alignment (KnOTS) on top of refine for maximum interference reduction (uses more VRAM for SVD decomposition). Higher levels help most when LoRAs have high conflict; for low-conflict or orthogonal LoRAs, 'none' is usually fine. (Previously: this setting was called 'merge_quality' with values standard/enhanced/maximum.)",
+        "options": {
+          "none": "None",
+          "refine": "Refine",
+          "full": "Full"
+        }
+      },
+      "strategy_set": {
+        "name": "Strategy Set",
+        "tooltip": "Which merge strategies the auto-selector can choose from. 'full': all strategies available (consensus, SLERP, orthogonal detection). 'no_slerp': same detection logic but SLERP is excluded (weighted_average stays as-is). 'basic': only TIES vs weighted_average, no advanced strategy selection. (Previously: this setting was called 'behavior_profile' with values v1.2/no_slerp/classic.)",
+        "options": {
+          "full": "Full",
+          "no_slerp": "No SLERP",
+          "basic": "Basic"
+        }
+      },
+      "architecture_preset": {
+        "name": "Architecture Preset",
+        "tooltip": "Architecture-aware threshold tuning. 'auto' detects from LoRA keys. 'sd_unet': SD/SDXL UNet defaults. 'dit': DiT models (Flux, WAN, Z-Image, LTX, HunyuanVideo) with higher density floors and wider strength range. 'acestep_dit': ACE-Step music DiT — tuned for voice preservation with wider orthogonal band and conservative TIES threshold. 'llm': LLM-based models (Qwen, LLaMA).",
+        "options": {
+          "auto": "Auto",
+          "sd_unet": "Sd Unet",
+          "dit": "Dit",
+          "acestep_dit": "Acestep Dit",
+          "llm": "Llm"
+        }
+      },
+      "merge_strategy_override": {
+        "name": "Merge Strategy Override",
+        "tooltip": "Connect the merge_strategy output from a LoRA Conflict Editor to override the optimizer's auto-detected strategy."
+      },
+      "settings_source": {
+        "name": "Settings Source",
+        "tooltip": "manual: use widget settings. from_autotuner: passthrough when chained with a live AutoTuner. from_tuner_data: apply the top-ranked config from loaded tuner data (use with Load Tuner Data).",
+        "options": {
+          "manual": "Manual",
+          "from_autotuner": "From Autotuner",
+          "from_tuner_data": "From Tuner Data"
+        }
+      },
+      "tuner_data": {
+        "name": "Tuner Data",
+        "tooltip": "Connect from the LoRA AutoTuner's tuner_data output. Used when settings_source is 'from_autotuner'."
+      },
+      "decision_smoothing": {
+        "name": "Decision Smoothing",
+        "tooltip": "Smooth per-group strategy metrics toward each block's average before Pass 2 decisions. 0 disables smoothing; 0.2-0.4 usually removes noisy mode flips without washing out real differences."
+      },
+      "smooth_slerp_gate": {
+        "name": "Smooth SLERP Gate",
+        "tooltip": "When enabled, uses smoothed cosine (decision_cosine) for SLERP gate instead of raw avg_cos_sim. Can affect SLERP/weighted_average ratio."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Clip"
+      },
+      "2": {
+        "name": "Analysis Report"
+      },
+      "3": {
+        "name": "Tuner Data"
+      },
+      "4": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "LoRAOptimizerSimple": {
+    "display_name": "LoRA Optimizer",
+    "description": "Analyze, merge, and apply a LoRA stack using recommended defaults and optional settings nodes.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "Your base model (e.g. SDXL, Flux). The merged LoRAs will be applied to it."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect your LoRA Stack node here — this is the list of LoRAs you want to merge together."
+      },
+      "output_strength": {
+        "name": "Output Strength",
+        "tooltip": "Master volume for the merged result. 1.0 = full effect, 0.5 = half. Set to -1 for auto: the optimizer picks a good strength for you."
+      },
+      "clip": {
+        "name": "Clip",
+        "tooltip": "Connect your text encoder so LoRAs can also affect how prompts are understood. Leave empty for video models."
+      },
+      "clip_strength_multiplier": {
+        "name": "Clip Strength Multiplier",
+        "tooltip": "How strongly LoRAs affect text understanding. At 1.0, same strength as the model. Lower values reduce LoRA influence on prompts while keeping the visual effect."
+      },
+      "tuner_data": {
+        "name": "Tuner Data",
+        "tooltip": "Connect results from a LoRA AutoTuner or Load Tuner Data node. The optimizer will use the best settings found by the tuner instead of defaults."
+      },
+      "settings": {
+        "name": "Settings",
+        "tooltip": "Connect a Settings node (Optimizer Settings or AutoTuner Settings) for full control. Takes priority over tuner_data and defaults."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Clip"
+      },
+      "2": {
+        "name": "Analysis Report"
+      },
+      "3": {
+        "name": "Tuner Data"
+      },
+      "4": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "LoRAInlineChainOptions": {
+    "display_name": "LoRA Inline Chain Options",
+    "description": "Configure each captured LoRA by its position in an inline loader chain.",
+    "inputs": {
+      "settings_visibility": {
+        "name": "Settings Visibility",
+        "tooltip": "Simple: one strength multiplier per LoRA. Advanced: separate model/clip multipliers, conflict mode, key filter, and preserve per LoRA.",
+        "options": {
+          "simple": "Simple",
+          "advanced": "Advanced"
+        }
+      },
+      "lora_count": {
+        "name": "LoRA Count",
+        "tooltip": "How many option slots to show. Slot #1 = first Load LoRA in the chain (closest to the checkpoint)."
+      },
+      "enabled_1": {
+        "name": "Enabled #1",
+        "tooltip": "Off: LoRA #1 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_1": {
+        "name": "Strength #1",
+        "tooltip": "Multiplier on the strength LoRA #1's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_1": {
+        "name": "Model Strength #1",
+        "tooltip": "Multiplier on LoRA #1's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_1": {
+        "name": "Clip Strength #1",
+        "tooltip": "Multiplier on LoRA #1's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_1": {
+        "name": "Conflict Mode #1",
+        "tooltip": "LoRA #1 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_1": {
+        "name": "Key Filter #1",
+        "tooltip": "LoRA #1 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_1": {
+        "name": "Preserve #1",
+        "tooltip": "Mark LoRA #1 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_2": {
+        "name": "Enabled #2",
+        "tooltip": "Off: LoRA #2 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_2": {
+        "name": "Strength #2",
+        "tooltip": "Multiplier on the strength LoRA #2's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_2": {
+        "name": "Model Strength #2",
+        "tooltip": "Multiplier on LoRA #2's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_2": {
+        "name": "Clip Strength #2",
+        "tooltip": "Multiplier on LoRA #2's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_2": {
+        "name": "Conflict Mode #2",
+        "tooltip": "LoRA #2 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_2": {
+        "name": "Key Filter #2",
+        "tooltip": "LoRA #2 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_2": {
+        "name": "Preserve #2",
+        "tooltip": "Mark LoRA #2 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_3": {
+        "name": "Enabled #3",
+        "tooltip": "Off: LoRA #3 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_3": {
+        "name": "Strength #3",
+        "tooltip": "Multiplier on the strength LoRA #3's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_3": {
+        "name": "Model Strength #3",
+        "tooltip": "Multiplier on LoRA #3's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_3": {
+        "name": "Clip Strength #3",
+        "tooltip": "Multiplier on LoRA #3's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_3": {
+        "name": "Conflict Mode #3",
+        "tooltip": "LoRA #3 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_3": {
+        "name": "Key Filter #3",
+        "tooltip": "LoRA #3 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_3": {
+        "name": "Preserve #3",
+        "tooltip": "Mark LoRA #3 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_4": {
+        "name": "Enabled #4",
+        "tooltip": "Off: LoRA #4 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_4": {
+        "name": "Strength #4",
+        "tooltip": "Multiplier on the strength LoRA #4's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_4": {
+        "name": "Model Strength #4",
+        "tooltip": "Multiplier on LoRA #4's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_4": {
+        "name": "Clip Strength #4",
+        "tooltip": "Multiplier on LoRA #4's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_4": {
+        "name": "Conflict Mode #4",
+        "tooltip": "LoRA #4 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_4": {
+        "name": "Key Filter #4",
+        "tooltip": "LoRA #4 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_4": {
+        "name": "Preserve #4",
+        "tooltip": "Mark LoRA #4 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_5": {
+        "name": "Enabled #5",
+        "tooltip": "Off: LoRA #5 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_5": {
+        "name": "Strength #5",
+        "tooltip": "Multiplier on the strength LoRA #5's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_5": {
+        "name": "Model Strength #5",
+        "tooltip": "Multiplier on LoRA #5's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_5": {
+        "name": "Clip Strength #5",
+        "tooltip": "Multiplier on LoRA #5's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_5": {
+        "name": "Conflict Mode #5",
+        "tooltip": "LoRA #5 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_5": {
+        "name": "Key Filter #5",
+        "tooltip": "LoRA #5 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_5": {
+        "name": "Preserve #5",
+        "tooltip": "Mark LoRA #5 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_6": {
+        "name": "Enabled #6",
+        "tooltip": "Off: LoRA #6 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_6": {
+        "name": "Strength #6",
+        "tooltip": "Multiplier on the strength LoRA #6's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_6": {
+        "name": "Model Strength #6",
+        "tooltip": "Multiplier on LoRA #6's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_6": {
+        "name": "Clip Strength #6",
+        "tooltip": "Multiplier on LoRA #6's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_6": {
+        "name": "Conflict Mode #6",
+        "tooltip": "LoRA #6 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_6": {
+        "name": "Key Filter #6",
+        "tooltip": "LoRA #6 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_6": {
+        "name": "Preserve #6",
+        "tooltip": "Mark LoRA #6 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_7": {
+        "name": "Enabled #7",
+        "tooltip": "Off: LoRA #7 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_7": {
+        "name": "Strength #7",
+        "tooltip": "Multiplier on the strength LoRA #7's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_7": {
+        "name": "Model Strength #7",
+        "tooltip": "Multiplier on LoRA #7's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_7": {
+        "name": "Clip Strength #7",
+        "tooltip": "Multiplier on LoRA #7's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_7": {
+        "name": "Conflict Mode #7",
+        "tooltip": "LoRA #7 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_7": {
+        "name": "Key Filter #7",
+        "tooltip": "LoRA #7 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_7": {
+        "name": "Preserve #7",
+        "tooltip": "Mark LoRA #7 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_8": {
+        "name": "Enabled #8",
+        "tooltip": "Off: LoRA #8 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_8": {
+        "name": "Strength #8",
+        "tooltip": "Multiplier on the strength LoRA #8's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_8": {
+        "name": "Model Strength #8",
+        "tooltip": "Multiplier on LoRA #8's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_8": {
+        "name": "Clip Strength #8",
+        "tooltip": "Multiplier on LoRA #8's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_8": {
+        "name": "Conflict Mode #8",
+        "tooltip": "LoRA #8 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_8": {
+        "name": "Key Filter #8",
+        "tooltip": "LoRA #8 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_8": {
+        "name": "Preserve #8",
+        "tooltip": "Mark LoRA #8 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_9": {
+        "name": "Enabled #9",
+        "tooltip": "Off: LoRA #9 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_9": {
+        "name": "Strength #9",
+        "tooltip": "Multiplier on the strength LoRA #9's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_9": {
+        "name": "Model Strength #9",
+        "tooltip": "Multiplier on LoRA #9's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_9": {
+        "name": "Clip Strength #9",
+        "tooltip": "Multiplier on LoRA #9's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_9": {
+        "name": "Conflict Mode #9",
+        "tooltip": "LoRA #9 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_9": {
+        "name": "Key Filter #9",
+        "tooltip": "LoRA #9 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_9": {
+        "name": "Preserve #9",
+        "tooltip": "Mark LoRA #9 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      },
+      "enabled_10": {
+        "name": "Enabled #10",
+        "tooltip": "Off: LoRA #10 is removed from the model entirely (not merged, not applied)."
+      },
+      "strength_10": {
+        "name": "Strength #10",
+        "tooltip": "Multiplier on the strength LoRA #10's loader set (1.0 = keep as loaded)."
+      },
+      "model_strength_10": {
+        "name": "Model Strength #10",
+        "tooltip": "Multiplier on LoRA #10's loader strength for image generation (visual style, composition). 1.0 = keep as loaded."
+      },
+      "clip_strength_10": {
+        "name": "Clip Strength #10",
+        "tooltip": "Multiplier on LoRA #10's loader strength for text understanding (prompt interpretation). 1.0 = keep as loaded."
+      },
+      "conflict_mode_10": {
+        "name": "Conflict Mode #10",
+        "tooltip": "LoRA #10 conflict filter. 'all': apply everywhere (default). 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "key_filter_10": {
+        "name": "Key Filter #10",
+        "tooltip": "LoRA #10 key filter. 'all': contribute all keys (default). 'shared_only': only keys present in 2+ LoRAs. 'unique_only': only keys present in exactly 1 LoRA. 'audio_only': only audio layers (LTX-2 / ACE-Step). 'no_audio': only non-audio (video) layers.",
+        "options": {
+          "all": "All",
+          "shared_only": "Shared Only",
+          "unique_only": "Unique Only",
+          "audio_only": "Audio Only",
+          "no_audio": "No Audio"
+        }
+      },
+      "preserve_10": {
+        "name": "Preserve #10",
+        "tooltip": "Mark LoRA #10 as a STYLE LoRA to protect it in conflict merges. When on, it is never trimmed by sparsification and is exempt from TIES sign-election (which deletes a style's minority-sign direction) — its full contribution is added on top of the conflict-resolved merge. Use when a style LoRA keeps disappearing when merged with a content LoRA."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Chain Options"
+      }
+    }
+  },
+  "LoRAOptimizerInline": {
+    "display_name": "LoRA Optimizer (Inline Chain)",
+    "description": "Capture an already-applied LoRA chain, optimize it, and apply the merged result once.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "Model coming out of your regular Load LoRA chain. The optimizer reads the LoRA patches on it, merges them, and re-applies the result."
+      },
+      "output_strength": {
+        "name": "Output Strength",
+        "tooltip": "Master volume for the merged result. 1.0 = full effect, 0.5 = half. Set to -1 for auto: the optimizer picks a good strength for you."
+      },
+      "clip_strength_multiplier": {
+        "name": "Clip Strength Multiplier",
+        "tooltip": "How strongly LoRAs affect text understanding. At 1.0, same strength as the model. Lower values reduce LoRA influence on prompts while keeping the visual effect."
+      },
+      "clip": {
+        "name": "Clip",
+        "tooltip": "CLIP from the same loader chain, so text-encoder patches are merged too."
+      },
+      "settings": {
+        "name": "Settings",
+        "tooltip": "Optimizer Settings node for full control. Both advanced mode and AutoTuner mode (search / memory / community) are supported inline."
+      },
+      "chain_options": {
+        "name": "Chain Options",
+        "tooltip": "Connect a LoRA Inline Chain Options node to set per-LoRA options (attributed by chain order: slot #1 = first loader). Leave unconnected to merge every captured LoRA with default options."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Clip"
+      },
+      "2": {
+        "name": "Analysis Report"
+      },
+      "3": {
+        "name": "Tuner Data"
+      },
+      "4": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "SaveMergedLoRA": {
+    "display_name": "Save Merged LoRA",
+    "description": "Save optimizer output as a reusable safetensors LoRA.",
+    "inputs": {
+      "lora_data": {
+        "name": "LoRA Data",
+        "tooltip": "Connect the lora_data output from LoRA Optimizer here."
+      },
+      "save_folder": {
+        "name": "Save Folder",
+        "tooltip": "Which loras folder to save into. Lists configured lora paths from ComfyUI and extra_model_paths.yaml."
+      },
+      "filename": {
+        "name": "Filename",
+        "tooltip": "Name for the saved file. Subdirectories are allowed (e.g. 'merged/my_lora'). Extension .safetensors is added automatically."
+      },
+      "save_rank": {
+        "name": "Save Rank",
+        "tooltip": "0 = auto: uses the sum of all input LoRA ranks (e.g. 3 rank-32 LoRAs → rank 96). Non-zero = compress all layers to exactly this rank via SVD. Use a non-zero value to reduce output file size — set it to match your largest input LoRA's rank or lower. Higher values = more accurate but larger file."
+      },
+      "bake_strength": {
+        "name": "Bake Strength",
+        "tooltip": "When enabled, the saved LoRA reproduces your exact merge when loaded at strength 1.0. When disabled, strengths are not baked in — you'll need to set the strength manually when loading."
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Example prompt or trigger words to embed in the file metadata. Useful for sharing — some UIs display this automatically."
+      },
+      "description": {
+        "name": "Description",
+        "tooltip": "Optional description or notes about this merged LoRA. Stored in file metadata."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "File Path"
+      }
+    }
+  },
+  "BuildAutoTunerPythonEvaluator": {
+    "display_name": "Build AutoTuner Python Evaluator",
+    "description": "Connect a local Python evaluator to supplement AutoTuner scoring.",
+    "inputs": {
+      "module_path": {
+        "name": "Module Path",
+        "tooltip": "Python file path or importable module name that contains the evaluator callable."
+      },
+      "callable_name": {
+        "name": "Callable Name",
+        "tooltip": "Callable to import. Signature: fn(model=..., clip=..., lora_data=..., config=..., context=..., analysis_summary=...) -> float or {'score': float, 'details': ...}."
+      },
+      "combine_mode": {
+        "name": "Combine Mode",
+        "tooltip": "How AutoTuner combines the built-in score with the external evaluator score.",
+        "options": {
+          "blend": "Blend",
+          "external_only": "External Only",
+          "multiply": "Multiply"
+        }
+      },
+      "weight": {
+        "name": "Weight",
+        "tooltip": "Blend weight for the external evaluator when combine_mode=blend."
+      },
+      "context_json": {
+        "name": "Context JSON",
+        "tooltip": "Optional JSON object passed through to the evaluator as context."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Evaluator"
+      }
+    }
+  },
+  "LoRAConflictEditor": {
+    "display_name": "LoRA Conflict Editor",
+    "description": "Override per-LoRA conflict rules and the target merge strategy.",
+    "inputs": {
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect a LoRA Stack node here. The editor will analyze conflicts between these LoRAs."
+      },
+      "merge_strategy": {
+        "name": "Merge Strategy",
+        "tooltip": "Merge strategy to pass to the optimizer. 'auto': let the optimizer decide based on conflict analysis. 'ties': force TIES merging (good for high-conflict stacks). 'consensus': force Fisher-proxy + magnitude calibration + spectral cleanup (good for highly similar LoRAs). 'slerp': force spherical interpolation (magnitude-preserving, good for low-conflict stacks). 'weighted_average': force simple averaging (good for compatible LoRAs). 'weighted_sum': force direct addition (preserves all weights exactly).",
+        "options": {
+          "auto": "Auto",
+          "ties": "TIES",
+          "consensus": "Consensus",
+          "slerp": "SLERP",
+          "weighted_average": "Weighted Average",
+          "weighted_sum": "Weighted Sum"
+        }
+      },
+      "conflict_mode_1": {
+        "name": "Conflict Mode #1",
+        "tooltip": "LoRA #1 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_2": {
+        "name": "Conflict Mode #2",
+        "tooltip": "LoRA #2 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_3": {
+        "name": "Conflict Mode #3",
+        "tooltip": "LoRA #3 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_4": {
+        "name": "Conflict Mode #4",
+        "tooltip": "LoRA #4 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_5": {
+        "name": "Conflict Mode #5",
+        "tooltip": "LoRA #5 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_6": {
+        "name": "Conflict Mode #6",
+        "tooltip": "LoRA #6 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_7": {
+        "name": "Conflict Mode #7",
+        "tooltip": "LoRA #7 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_8": {
+        "name": "Conflict Mode #8",
+        "tooltip": "LoRA #8 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_9": {
+        "name": "Conflict Mode #9",
+        "tooltip": "LoRA #9 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      },
+      "conflict_mode_10": {
+        "name": "Conflict Mode #10",
+        "tooltip": "LoRA #10 conflict filter. 'auto': node suggests based on analysis. 'all': apply everywhere. 'low_conflict': only where this LoRA agrees with the majority. 'high_conflict': only where this LoRA disagrees.",
+        "options": {
+          "auto": "Auto",
+          "all": "All",
+          "low_conflict": "Low Conflict",
+          "high_conflict": "High Conflict"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      },
+      "1": {
+        "name": "Analysis Report"
+      },
+      "2": {
+        "name": "Merge Strategy"
+      }
+    }
+  },
+  "MergedLoRAToHook": {
+    "display_name": "Merged LoRA to Hook",
+    "description": "Convert merged LoRA data to a ComfyUI hook.",
+    "inputs": {
+      "lora_data": {
+        "name": "LoRA Data",
+        "tooltip": "Connect the lora_data output from LoRA Optimizer."
+      },
+      "prev_hooks": {
+        "name": "Prev Hooks",
+        "tooltip": "Optional: chain with existing hooks."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Hooks"
+      }
+    }
+  },
+  "MergedLoRAToWanVideo": {
+    "display_name": "(WIP) Merged LoRA → WanVideo",
+    "description": "Apply merged LoRA data to a WanVideo model.",
+    "inputs": {
+      "wan_model": {
+        "name": "Wan Model"
+      },
+      "lora_data": {
+        "name": "LoRA Data"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      }
+    }
+  },
+  "WanVideoLoRAOptimizer": {
+    "display_name": "(WIP) WanVideo LoRA Optimizer",
+    "description": "Legacy advanced optimizer entry point for WanVideo models.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "Your WanVideo model from WanVideoModelLoader."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect a LoRA Stack node here. This is the list of LoRAs you want to merge together."
+      },
+      "output_strength": {
+        "name": "Output Strength",
+        "tooltip": "Master volume for the merged result. 1.0 = full effect, 0.5 = half, 0 = disabled. Set to -1 for auto: uses the suggested max strength (compensates for energy lost during merge)."
+      },
+      "auto_strength": {
+        "name": "Auto Strength",
+        "tooltip": "Automatically turns down individual LoRA strengths when combining many LoRAs to avoid oversaturated or distorted results. Useful when stacking 3+ LoRAs.",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "Auto Strength Floor",
+        "tooltip": "Floor on how much auto-strength may shrink your LoRA strengths — a uniform down-scale multiplier (never scales UP, never flips signs). 1.0 = don't shrink at all, 0.5 = shrink to at most half, 0 = no floor at all (remove the limit — auto-strength may shrink strengths all the way down), -1 = architecture-aware default (higher for motion-heavy video, lower for image models). Applies to negative LoRAs by magnitude (−1.75 → −1.49 at 0.85, sign kept) and to >1.0 strengths. An explicit value ≥0 applies to EVERY stack, not just orthogonal ones."
+      },
+      "vram_budget": {
+        "name": "VRAM Budget",
+        "tooltip": "Fraction of free VRAM to use for storing merged patches. 0 = all CPU (default), 1.0 = use all free VRAM. Reduces RAM usage on GPU systems."
+      },
+      "optimization_mode": {
+        "name": "Optimization Mode",
+        "tooltip": "How the optimizer decides to combine LoRAs. 'per_prefix' (recommended): automatically picks the best method for each layer. 'global': uses one method everywhere. 'additive': simple weighted addition with no conflict resolution — preserves all weights exactly. Use for edit, distillation, or DPO LoRAs. (Previously: 'additive' was called 'weighted_sum_only'.)",
+        "options": {
+          "per_prefix": "Per Prefix",
+          "global": "Global",
+          "additive": "Additive"
+        }
+      },
+      "cache_patches": {
+        "name": "Cache Patches",
+        "tooltip": "Keep the merge result in memory so re-running the workflow is instant. Disabled by default for large video models to save RAM.",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "patch_compression": {
+        "name": "Patch Compression",
+        "tooltip": "Shrink the merged result to use less memory. 'smart' (recommended): compresses layers where it's lossless, skips layers that already went through rank reduction. 'aggressive': compresses everything including rank-reduced layers — saves the most memory but slightly lossy. 'disabled': no compression, uses more RAM. (Previously: this setting was called 'compress_patches' with values non_ties/all/disabled.)",
+        "options": {
+          "smart": "Smart",
+          "aggressive": "Aggressive",
+          "disabled": "Disabled"
+        }
+      },
+      "svd_device": {
+        "name": "SVD Device",
+        "tooltip": "Where to run compression math. GPU is much faster (10-50x). Switch to CPU only if you get out-of-memory errors during the merge.",
+        "options": {
+          "gpu": "GPU",
+          "cpu": "CPU"
+        }
+      },
+      "normalize_keys": {
+        "name": "Normalize Keys",
+        "tooltip": "Normalizes LoRA keys from different training tools (LyCORIS, diffusers, finetrainer, etc.) to a common format. Enabled by default for WanVideo LoRAs.",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "sparsification": {
+        "name": "Sparsification",
+        "tooltip": "Reduces interference between LoRAs by sparsifying weights before merging. DARE: random dropout everywhere. DELLA: magnitude-aware dropout everywhere. Conflict variants (recommended): same algorithms but ONLY applied where LoRAs push in opposite directions — unique contributions are preserved untouched.",
+        "options": {
+          "disabled": "Disabled",
+          "dare": "DARE",
+          "della": "DELLA",
+          "dare_conflict": "DARE Conflict",
+          "della_conflict": "DELLA Conflict"
+        }
+      },
+      "sparsification_density": {
+        "name": "Sparsification Density",
+        "tooltip": "What percentage of weights to keep (0.7 = keep 70%, drop 30%). Lower values drop more weights — reduces interference but may lose detail. At 1.0, no weights are dropped (equivalent to disabled). Note: in TIES mode, sparsification replaces the trim step — setting density to 1.0 disables both sparsification AND trimming."
+      },
+      "dare_dampening": {
+        "name": "DARE Dampening",
+        "tooltip": "DAREx dampening: reduces the aggressiveness of DARE's rescaling factor. At 0.0 (default): standard DARE rescaling (1/density). At higher values: dampened rescaling that reduces noise amplification at low density values. Only affects DARE/DARE-conflict modes. Based on DAREx (ICLR 2025)."
+      },
+      "merge_refinement": {
+        "name": "Merge Refinement",
+        "tooltip": "Optional preprocessing steps applied to weight diffs before merging. none: merge as-is, no extra processing. refine: adds direction orthogonalization + selfish weight protection (TALL-masks) to reduce interference between LoRAs (minimal extra compute). full: adds SVD alignment (KnOTS) on top of refine for maximum interference reduction (uses more VRAM for SVD decomposition). Higher levels help most when LoRAs have high conflict; for low-conflict or orthogonal LoRAs, 'none' is usually fine. (Previously: this setting was called 'merge_quality' with values standard/enhanced/maximum.)",
+        "options": {
+          "none": "None",
+          "refine": "Refine",
+          "full": "Full"
+        }
+      },
+      "strategy_set": {
+        "name": "Strategy Set",
+        "tooltip": "Which merge strategies the auto-selector can choose from. 'full': all strategies available (consensus, SLERP, orthogonal detection). 'no_slerp': same detection logic but SLERP is excluded (weighted_average stays as-is). 'basic': only TIES vs weighted_average, no advanced strategy selection. (Previously: this setting was called 'behavior_profile' with values v1.2/no_slerp/classic.)",
+        "options": {
+          "full": "Full",
+          "no_slerp": "No SLERP",
+          "basic": "Basic"
+        }
+      },
+      "architecture_preset": {
+        "name": "Architecture Preset",
+        "tooltip": "Architecture-aware threshold tuning. Default 'dit' for WanVideo models. 'auto' detects from LoRA keys.",
+        "options": {
+          "auto": "Auto",
+          "dit": "Dit",
+          "sd_unet": "Sd Unet",
+          "llm": "Llm"
+        }
+      },
+      "merge_strategy_override": {
+        "name": "Merge Strategy Override",
+        "tooltip": "Connect the merge_strategy output from a LoRA Conflict Editor to override the optimizer's auto-detected strategy."
+      },
+      "decision_smoothing": {
+        "name": "Decision Smoothing",
+        "tooltip": "Smooth per-group strategy metrics toward each block's average before Pass 2 decisions. 0 disables smoothing; 0.2-0.4 usually removes noisy mode flips without washing out real differences."
+      },
+      "smooth_slerp_gate": {
+        "name": "Smooth SLERP Gate",
+        "tooltip": "When enabled, uses smoothed cosine (decision_cosine) for SLERP gate instead of raw avg_cos_sim. Can affect SLERP/weighted_average ratio."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Analysis Report"
+      },
+      "2": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "LoRAAutoTuner": {
+    "display_name": "LoRA AutoTuner",
+    "description": "Sweep candidate settings, score them, and output the best merge or tuning data.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "Base model to merge LoRAs into."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "LoRA stack from a LoRA Stack node."
+      },
+      "output_strength": {
+        "name": "Output Strength",
+        "tooltip": "Master volume for the merged result. Set to -1 for auto (uses suggested max strength)."
+      },
+      "clip": {
+        "name": "Clip",
+        "tooltip": "Optional CLIP model for text-encoder LoRA keys."
+      },
+      "clip_strength_multiplier": {
+        "name": "Clip Strength Multiplier",
+        "tooltip": "Multiplier for CLIP LoRA strengths."
+      },
+      "top_n": {
+        "name": "Top N",
+        "tooltip": "Number of top configurations to evaluate via actual merge. Higher = slower but explores more options."
+      },
+      "normalize_keys": {
+        "name": "Normalize Keys",
+        "tooltip": "Makes LoRAs from different training tools compatible.",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "scoring_svd": {
+        "name": "Scoring SVD",
+        "tooltip": "SVD-based scoring for ranking configurations.\ndisabled: fast norm-only scoring (usually sufficient).\nmerge_quality: SVD on merged diff tensors — more thorough quality measurement.\nlora_rank: effective rank of LoRA factors — experimental, changes ranking.\nfull: both merge_quality + lora_rank.\nWith Triton installed, SVD modes are hardware-accelerated and add minimal overhead.",
+        "options": {
+          "disabled": "Disabled",
+          "merge_quality": "Merge Quality",
+          "lora_rank": "LoRA Rank",
+          "full": "Full"
+        }
+      },
+      "scoring_device": {
+        "name": "Scoring Device",
+        "tooltip": "Device for scoring computations. GPU is much faster with SVD scoring modes.",
+        "options": {
+          "cpu": "CPU",
+          "gpu": "GPU"
+        }
+      },
+      "architecture_preset": {
+        "name": "Architecture Preset",
+        "tooltip": "Architecture-aware threshold tuning. 'auto' detects from LoRA keys. 'acestep_dit' is tuned for ACE-Step music LoRA voice preservation.",
+        "options": {
+          "auto": "Auto",
+          "sd_unet": "Sd Unet",
+          "dit": "Dit",
+          "acestep_dit": "Acestep Dit",
+          "llm": "Llm"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "Auto Strength Floor",
+        "tooltip": "Floor on how much auto-strength may shrink your LoRA strengths — a uniform down-scale multiplier (never scales UP, never flips signs). 1.0 = don't shrink at all, 0.5 = shrink to at most half, 0 = no floor at all (remove the limit — auto-strength may shrink strengths all the way down), -1 = architecture-aware default. Applies to negative LoRAs by magnitude (sign kept) and to >1.0 strengths. An explicit value ≥0 applies to EVERY stack, not just orthogonal ones."
+      },
+      "evaluator": {
+        "name": "Evaluator",
+        "tooltip": "Optional external evaluator spec. Use this to blend prompt/reference scoring from your own generation code with the built-in merge metrics."
+      },
+      "community_cache": {
+        "name": "Community Cache",
+        "tooltip": "Community-backed cache on Hugging Face.\nupload_only: run locally and upload results; do NOT replay HF cache hits (useful for backfill reruns).\nupload_and_download: download precomputed results and contribute yours back. Requires huggingface-cli login or HF_TOKEN env var.",
+        "options": {
+          "disabled": "Disabled",
+          "upload_only": "Upload Only",
+          "upload_and_download": "Upload And Download"
+        }
+      },
+      "cache_patches": {
+        "name": "Cache Patches",
+        "tooltip": "Cache the AutoTuner result in RAM so re-execution with the same inputs skips the full sweep. Disable to free RAM after merge (recommended for video models).",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "diff_cache_mode": {
+        "name": "Diff Cache Mode",
+        "tooltip": "Cache LoRA diffs across candidates to skip redundant computation. 'disabled' recomputes each time (no extra memory). 'auto' (recommended) uses RAM up to diff_cache_ram_pct of free memory then recomputes the overflow — low-rank diffs are recomputed anyway (cheaper than a cache read). 'ram' caches entirely in memory (fastest, unbounded). 'disk' caches to temp files (opt-in; only worth it for diffs expensive to recompute on a fast temp volume). Diffs are cached in fp32 so a cache hit is identical to a recompute. WARNING: ram/disk can use significant memory/storage on large models.",
+        "options": {
+          "disabled": "Disabled",
+          "auto": "Auto",
+          "ram": "Ram",
+          "disk": "Disk"
+        }
+      },
+      "diff_cache_ram_pct": {
+        "name": "Diff Cache Ram Pct",
+        "tooltip": "Fraction of free system RAM to use for diff cache in 'auto' mode. 0.5 = use up to 50% of available RAM; diffs past that budget are recomputed on demand (not spilled to disk)."
+      },
+      "vram_budget": {
+        "name": "VRAM Budget",
+        "tooltip": "Fraction of free VRAM to use for storing merged patches. 0 = all CPU (default), 1.0 = use all free VRAM. Reduces RAM usage on GPU systems."
+      },
+      "scoring_speed": {
+        "name": "Scoring Speed",
+        "tooltip": "Controls how many prefixes Phase 2 scores per candidate. All candidates are scored on the same subset so ranking stays fair.\n\n• full — Score every prefix. Best accuracy, slowest. Use when merging very different LoRAs (e.g. style + character + concept) where block behavior varies a lot.\n• fast — Every 2nd prefix (~50%% faster). Good default for most merges.\n• turbo — Every 3rd prefix (~67%% faster). Works well when your LoRAs have similar conflict across blocks (e.g. multiple characters from the same trainer).\n• turbo+ — Every 4th prefix (~75%% faster). Best for large models (DiT/Flux/WAN) or when iterating quickly. May miss subtle block-level differences on SD/SDXL.",
+        "options": {
+          "full": "Full",
+          "fast": "Fast",
+          "turbo": "Turbo",
+          "turbo+": "Turbo+"
+        }
+      },
+      "scoring_formula": {
+        "name": "Scoring Formula",
+        "tooltip": "Phase 2 scoring formula. v2: arch-aware sparsity + energy metrics (recommended). v1: legacy scoring with fixed 40% sparsity target.",
+        "options": {
+          "v2": "V2",
+          "v1": "V1"
+        }
+      },
+      "output_mode": {
+        "name": "Output Mode",
+        "tooltip": "merge: output the top-ranked merged model. tuning_only: skip the final merge and pass the base model through so a downstream optimizer can apply the selected AutoTuner settings.",
+        "options": {
+          "merge": "Merge",
+          "tuning_only": "Tuning Only"
+        }
+      },
+      "decision_smoothing": {
+        "name": "Decision Smoothing",
+        "tooltip": "Smooth per-group decision metrics toward each block average before candidate ranking and final merge. 0 disables smoothing."
+      },
+      "smooth_slerp_gate": {
+        "name": "Smooth SLERP Gate",
+        "tooltip": "When enabled, uses smoothed cosine (decision_cosine) for SLERP gate instead of raw avg_cos_sim. Can affect SLERP/weighted_average ratio."
+      },
+      "memory_mode": {
+        "name": "Memory Mode",
+        "tooltip": "Persistent memory for tuning results across sessions.\nauto: Load cached results if available, save after tuning.\nauto_ignore_strength: Same as auto but the cache key ignores LoRA strengths — useful when sweeping strengths on orthogonal LoRAs where rankings don't change.\nread_only: Use cached results but don't save new ones.\nclear_and_run: Delete cached entry and re-tune from scratch.\n\nCache key uses LoRA names + strengths (order-independent) and tuning settings. Does not track LoRA file contents — if you retrain a LoRA with the same filename, use clear_and_run.",
+        "options": {
+          "disabled": "Disabled",
+          "auto": "Auto",
+          "auto_ignore_strength": "Auto Ignore Strength",
+          "read_only": "Read Only",
+          "clear_and_run": "Clear And Run"
+        }
+      },
+      "selection": {
+        "name": "Selection",
+        "tooltip": "Which ranked configuration to apply (1 = top-ranked). Change this to try a different config without re-running the full sweep."
+      },
+      "record_dataset": {
+        "name": "Record Dataset",
+        "tooltip": "Append analysis metrics and all scored configs to user/lora_optimizer_reports/autotuner_dataset.jsonl for threshold-tuning research. Entries are recorded only when a full sweep runs (cache/memory replays don't add entries).",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Clip"
+      },
+      "2": {
+        "name": "Report"
+      },
+      "3": {
+        "name": "Analysis Report"
+      },
+      "4": {
+        "name": "Tuner Data"
+      },
+      "5": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "LoRAMergeSelector": {
+    "display_name": "Merge Selector",
+    "description": "Select and apply a ranked configuration from existing AutoTuner data.",
+    "inputs": {
+      "model": {
+        "name": "Model",
+        "tooltip": "Base model (same one connected to the AutoTuner)."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "LoRA stack (same one connected to the AutoTuner)."
+      },
+      "tuner_data": {
+        "name": "Tuner Data",
+        "tooltip": "Connect from the LoRA AutoTuner's tuner_data output."
+      },
+      "selection": {
+        "name": "Selection",
+        "tooltip": "Which ranked configuration to apply (1 = top-ranked, 2 = next-ranked, etc.)."
+      },
+      "output_strength": {
+        "name": "Output Strength",
+        "tooltip": "Master volume for the merged result. Set to -1 for auto (uses suggested max strength)."
+      },
+      "clip": {
+        "name": "Clip",
+        "tooltip": "Optional CLIP model for text-encoder LoRA keys."
+      },
+      "clip_strength_multiplier": {
+        "name": "Clip Strength Multiplier",
+        "tooltip": "Multiplier for CLIP LoRA strengths."
+      },
+      "auto_strength_floor": {
+        "name": "Auto Strength Floor",
+        "tooltip": "Floor on how much auto-strength may shrink your LoRA strengths — a uniform down-scale multiplier (never scales UP or flips signs). 1.0 = don't shrink at all, 0.5 = shrink to at most half, 0 = no floor at all (remove the limit — auto-strength may shrink strengths all the way down). Applies to negative LoRAs by magnitude (sign kept) and to >1.0 strengths. Leave at -1 to use the architecture-aware default (or the AutoTuner's stored setting when available)."
+      },
+      "decision_smoothing": {
+        "name": "Decision Smoothing",
+        "tooltip": "Must match the AutoTuner run when per-group decisions depend on smoothing. 0 disables smoothing."
+      },
+      "vram_budget": {
+        "name": "VRAM Budget",
+        "tooltip": "Fraction of free VRAM to use for storing merged patches. 0 = all CPU (default), 1.0 = use all free VRAM. Reduces RAM usage on GPU systems."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Clip"
+      },
+      "2": {
+        "name": "Report"
+      },
+      "3": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "SaveTunerData": {
+    "display_name": "Save Tuner Data",
+    "description": "Save AutoTuner results to the user directory.",
+    "inputs": {
+      "tuner_data": {
+        "name": "Tuner Data",
+        "tooltip": "Connect the tuner_data output from LoRA AutoTuner."
+      },
+      "save_folder": {
+        "name": "Save Folder",
+        "tooltip": "Which tuner_data folder to save into. Lists all configured paths (from extra_model_paths.yaml and defaults)."
+      },
+      "filename": {
+        "name": "Filename",
+        "tooltip": "Filename. Subdirectories allowed (e.g. 'results/experiment1'). Extension .tuner is added automatically (.json also accepted)."
+      },
+      "overwrite": {
+        "name": "Overwrite",
+        "tooltip": "When enabled, overwrites existing files. When disabled, appends _001, _002, etc. to avoid overwriting."
+      },
+      "prompt": {
+        "name": "Prompt",
+        "tooltip": "Example prompt or trigger words to embed in the tuner file. Shown when loading."
+      },
+      "description": {
+        "name": "Description",
+        "tooltip": "Optional description or notes about this tuner run. Stored in the file."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "File Path"
+      }
+    }
+  },
+  "LoadTunerData": {
+    "display_name": "Load Tuner Data",
+    "description": "Load saved AutoTuner results and metadata.",
+    "inputs": {
+      "tuner_data_file": {
+        "name": "Tuner Data File",
+        "tooltip": "Select a saved tuner data file."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Tuner Data"
+      },
+      "1": {
+        "name": "Prompt"
+      },
+      "2": {
+        "name": "Description"
+      },
+      "3": {
+        "name": "Metadata Info"
+      }
+    }
+  },
+  "LoRACompatibilityAnalyzer": {
+    "display_name": "LoRA Compatibility Analyzer",
+    "description": "Analyze architecture, key overlap, and conflict compatibility, with optional node creation.",
+    "inputs": {
+      "enabled": {
+        "name": "Enabled",
+        "tooltip": "Toggle on to run compatibility analysis. Off by default so normal queue execution stays cheap."
+      },
+      "create_nodes": {
+        "name": "Create Nodes",
+        "tooltip": "Automatically create LoRA Stack and Load LoRA nodes from results."
+      },
+      "model": {
+        "name": "Model",
+        "tooltip": "Base model used for key mapping and target grouping."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "LoRA stack to analyze."
+      },
+      "clip": {
+        "name": "Clip",
+        "tooltip": "Optional CLIP model for text-encoder LoRA keys."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Report"
+      },
+      "1": {
+        "name": "Compatibility Map"
+      }
+    }
+  },
+  "LoRAMergeSettings": {
+    "display_name": "LoRA Merge Settings",
+    "description": "Share common merge parameters across optimizer nodes.",
+    "inputs": {
+      "normalize_keys": {
+        "name": "Normalize Keys",
+        "tooltip": "Ensures LoRAs from different training tools (Kohya, PEFT, etc.) work together. Keep enabled unless you have a specific reason to disable.",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "architecture_preset": {
+        "name": "Architecture Preset",
+        "tooltip": "Tells the optimizer what type of model you're using so it can pick the best merge settings. 'auto' detects it for you. 'acestep_dit' is tuned for ACE-Step music LoRA merging with voice preservation. Only change if auto-detection gets it wrong.",
+        "options": {
+          "auto": "Auto",
+          "sd_unet": "Sd Unet",
+          "dit": "Dit",
+          "acestep_dit": "Acestep Dit",
+          "llm": "Llm"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "Auto Strength Floor",
+        "tooltip": "Manual auto-strength floor — used only when auto_strength_floor_mode = 'manual'. Limits how much auto-strength may shrink your LoRA strengths: 1.0 = don't shrink at all, 0.5 = shrink to at most half, 0 = no floor at all (remove the limit — auto-strength may shrink strengths all the way down). It's a floor on a uniform down-scale multiplier — auto-strength never scales UP and never flips signs, so this applies to negative LoRAs by magnitude (−1.75 → −1.49 at 0.85, sign kept) and to >1.0 strengths (1.7 → 1.45 at 0.85)."
+      },
+      "decision_smoothing": {
+        "name": "Decision Smoothing",
+        "tooltip": "Prevents the optimizer from picking wildly different merge methods for similar layers. Higher values = more consistent choices across the model. 0.2-0.4 is usually a good range."
+      },
+      "smooth_slerp_gate": {
+        "name": "Smooth SLERP Gate",
+        "tooltip": "Changes how the optimizer decides when to use SLERP blending. When enabled, the decision is smoother and more stable. Try enabling if you notice inconsistent results between runs."
+      },
+      "vram_budget": {
+        "name": "VRAM Budget",
+        "tooltip": "How much GPU memory to use for storing merge results. 0 = keep everything in system RAM (safest). Increase to use GPU memory and reduce RAM usage."
+      },
+      "cache_patches": {
+        "name": "Cache Patches",
+        "tooltip": "Keeps the merge result in memory so re-running the workflow is instant. Disable to free RAM — recommended for large video models.",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "auto_strength_floor_mode": {
+        "name": "Auto Strength Floor Mode",
+        "tooltip": "How the auto-strength floor is chosen. 'auto' (recommended): architecture-aware default — higher (less shrink) for motion-heavy video models, lower for image models. 'manual': use the auto_strength_floor slider above. This only bounds the shrink — to turn auto-strength OFF entirely set auto_strength = disabled on the Optimizer Settings node (AutoTuner mode has no such toggle: it sweeps auto-strength on AND off automatically). For on-but-never-shrink, use manual with floor 1.0.",
+        "options": {
+          "auto": "Auto",
+          "manual": "Manual"
+        }
+      },
+      "star_eta": {
+        "name": "STAR Eta",
+        "tooltip": "Per-LoRA spectral cleaning (STAR). 100 = OFF. Lower values SVD each LoRA layer, keep the top singular components reaching this %% of the nuclear norm, and rescale to preserve magnitude — reduces interference when merging MANY or CONFLICTING LoRAs. Leave at 100 for 2-3 orthogonal LoRAs (it would just discard fine detail). Try 60-80 when merging many conflicting LoRAs."
+      },
+      "tame_layers": {
+        "name": "TAME Layers",
+        "tooltip": "Per-LoRA magnitude taming strength. 0 = OFF. Caps 'hot' layers whose delta is a large fraction of the base weight (they push activations off-manifold and cause oversaturation/frying). 0.5 = gentle, 1.0 = fully cap hot layers to tame_threshold x the base-weight norm. Turn on if a merge comes out fried; preserved (style) LoRAs are exempt."
+      },
+      "tame_threshold": {
+        "name": "TAME Threshold",
+        "tooltip": "A layer is 'hot' when its delta Frobenius norm exceeds this fraction of the base weight's norm. Only used when tame_layers > 0. Lower = tame more layers (more aggressive); 0.3 is a sensible starting point. Dial by eye on the output."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Merge Settings"
+      }
+    }
+  },
+  "LoRAOptimizerSettings": {
+    "display_name": "LoRA Optimizer Settings",
+    "description": "Configure advanced LoRA Optimizer behavior.",
+    "inputs": {
+      "auto_strength": {
+        "name": "Auto Strength",
+        "tooltip": "Automatically turns down individual LoRA strengths when combining many LoRAs, preventing oversaturation. Recommended to keep enabled.",
+        "options": {
+          "enabled": "Enabled",
+          "disabled": "Disabled"
+        }
+      },
+      "optimization_mode": {
+        "name": "Optimization Mode",
+        "tooltip": "How the optimizer picks merge methods. 'per_prefix' (recommended): picks the best method for each part of the model. 'global': uses one method everywhere. 'additive': simple stacking with no conflict handling — use for edit/DPO LoRAs.",
+        "options": {
+          "per_prefix": "Per Prefix",
+          "global": "Global",
+          "additive": "Additive"
+        }
+      },
+      "merge_refinement": {
+        "name": "Merge Refinement",
+        "tooltip": "Extra processing to reduce interference between LoRAs. 'none': fastest, usually fine. 'refine': light cleanup for better quality. 'full': most thorough but slower. Try 'refine' if you see artifacts or color shifts.",
+        "options": {
+          "none": "None",
+          "refine": "Refine",
+          "full": "Full"
+        }
+      },
+      "sparsification": {
+        "name": "Sparsification",
+        "tooltip": "Removes low-impact weights before merging to reduce interference between LoRAs. The 'conflict' variants (recommended if enabling) only trim where LoRAs disagree, leaving unique contributions intact.",
+        "options": {
+          "disabled": "Disabled",
+          "dare": "DARE",
+          "della": "DELLA",
+          "dare_conflict": "DARE Conflict",
+          "della_conflict": "DELLA Conflict"
+        }
+      },
+      "sparsification_density": {
+        "name": "Sparsification Density",
+        "tooltip": "How much of each LoRA to keep when sparsification is enabled. 0.7 = keep 70%. Lower values are more aggressive — reduces interference but may lose detail."
+      },
+      "dare_dampening": {
+        "name": "DARE Dampening",
+        "tooltip": "Controls how strongly surviving weights are boosted after sparsification trims some away. 0 = standard boost, higher = gentler. Only matters when sparsification is enabled."
+      },
+      "patch_compression": {
+        "name": "Patch Compression",
+        "tooltip": "Shrinks the merged result to use less memory. 'smart' (recommended): only compresses where it's lossless. 'aggressive': compresses everything, saves more memory but slightly lossy. 'disabled': no compression.",
+        "options": {
+          "smart": "Smart",
+          "aggressive": "Aggressive",
+          "disabled": "Disabled"
+        }
+      },
+      "svd_device": {
+        "name": "SVD Device",
+        "tooltip": "Where to run compression math. GPU is much faster. Switch to CPU only if you get out-of-memory errors.",
+        "options": {
+          "gpu": "GPU",
+          "cpu": "CPU"
+        }
+      },
+      "free_vram_between_passes": {
+        "name": "Free VRAM Between Passes",
+        "tooltip": "Frees GPU memory between merge steps. Enable if you're running out of VRAM on large models. Barely affects speed.",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "strategy_set": {
+        "name": "Strategy Set",
+        "tooltip": "Which merge methods the optimizer can choose from. 'full' (recommended): all methods available including SLERP blending. 'no_slerp': excludes SLERP. 'basic': only simple averaging.",
+        "options": {
+          "full": "Full",
+          "no_slerp": "No SLERP",
+          "basic": "Basic"
+        }
+      },
+      "merge_settings": {
+        "name": "Merge Settings",
+        "tooltip": "Connect a LoRA Merge Settings node here to share common settings. Uses good defaults if not connected."
+      },
+      "merge_strategy_override": {
+        "name": "Merge Strategy Override",
+        "tooltip": "Forces one specific merge method everywhere instead of letting the optimizer choose. Connect from a LoRA Conflict Editor node."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Settings"
+      }
+    }
+  },
+  "LoRAAutoTunerSettings": {
+    "display_name": "LoRA AutoTuner Settings",
+    "description": "Configure AutoTuner search, scoring, caching, and output behavior.",
+    "inputs": {
+      "top_n": {
+        "name": "Top N",
+        "tooltip": "How many of the best configurations to try with a real merge. Higher = explores more options but takes longer."
+      },
+      "scoring_svd": {
+        "name": "Scoring SVD",
+        "tooltip": "SVD-based scoring for ranking configurations.\ndisabled: fast norm-only scoring (usually sufficient).\nmerge_quality: SVD on merged diff tensors — more thorough quality measurement.\nlora_rank: effective rank of LoRA factors — experimental, changes ranking.\nfull: both merge_quality + lora_rank.\nWith Triton installed, SVD modes are hardware-accelerated and add minimal overhead.",
+        "options": {
+          "disabled": "Disabled",
+          "merge_quality": "Merge Quality",
+          "lora_rank": "LoRA Rank",
+          "full": "Full"
+        }
+      },
+      "scoring_device": {
+        "name": "Scoring Device",
+        "tooltip": "Where to run scoring math. GPU is much faster, especially with SVD scoring modes.",
+        "options": {
+          "cpu": "CPU",
+          "gpu": "GPU"
+        }
+      },
+      "scoring_speed": {
+        "name": "Scoring Speed",
+        "tooltip": "How thoroughly to score each configuration. 'full': most accurate, slowest. 'turbo' (recommended): good balance of speed and accuracy. 'turbo+': fastest, may miss subtle differences.",
+        "options": {
+          "full": "Full",
+          "fast": "Fast",
+          "turbo": "Turbo",
+          "turbo+": "Turbo+"
+        }
+      },
+      "scoring_formula": {
+        "name": "Scoring Formula",
+        "tooltip": "Which scoring formula to use. v2 (recommended): smarter scoring that adapts to your model type. v1: older formula, kept for comparison.",
+        "options": {
+          "v2": "V2",
+          "v1": "V1"
+        }
+      },
+      "diff_cache_mode": {
+        "name": "Diff Cache Mode",
+        "tooltip": "Caches intermediate data to speed up the sweep. 'auto' (recommended): uses RAM up to diff_cache_ram_pct, then recomputes the rest (no disk). 'disabled': slower but uses no extra memory.",
+        "options": {
+          "disabled": "Disabled",
+          "auto": "Auto",
+          "ram": "Ram",
+          "disk": "Disk"
+        }
+      },
+      "diff_cache_ram_pct": {
+        "name": "Diff Cache Ram Pct",
+        "tooltip": "How much of your free RAM the diff cache can use (in 'auto' mode). 0.5 = up to half your available RAM."
+      },
+      "community_cache": {
+        "name": "Community Cache",
+        "tooltip": "Community cache: share and reuse LoRA analysis results via Hugging Face.\nupload_only: run locally and upload results; do NOT replay HF cache hits. Useful for backfilling enriched configs.\nupload_and_download: download cached results before analysis and upload new ones after. Requires HF_TOKEN environment variable.",
+        "options": {
+          "disabled": "Disabled",
+          "upload_only": "Upload Only",
+          "upload_and_download": "Upload And Download"
+        }
+      },
+      "memory_mode": {
+        "name": "Memory Mode",
+        "tooltip": "Persistent memory for tuning results across sessions.\nauto: Load cached results if available, save after tuning.\nauto_ignore_strength: Same as auto but the cache key ignores LoRA strengths — useful when sweeping strengths on orthogonal LoRAs where rankings don't change.\nread_only: Use cached results but don't save new ones.\nclear_and_run: Delete cached entry and re-tune from scratch.",
+        "options": {
+          "disabled": "Disabled",
+          "auto": "Auto",
+          "auto_ignore_strength": "Auto Ignore Strength",
+          "read_only": "Read Only",
+          "clear_and_run": "Clear And Run"
+        }
+      },
+      "selection": {
+        "name": "Selection",
+        "tooltip": "Which ranked configuration to apply (1 = top-ranked). Change this to try a different config without re-running the full sweep."
+      },
+      "record_dataset": {
+        "name": "Record Dataset",
+        "tooltip": "Append analysis metrics and all scored configs to user/lora_optimizer_reports/autotuner_dataset.jsonl for threshold-tuning research. Entries are recorded only when a full sweep runs (cache/memory replays don't add entries).",
+        "options": {
+          "disabled": "Disabled",
+          "enabled": "Enabled"
+        }
+      },
+      "merge_settings": {
+        "name": "Merge Settings",
+        "tooltip": "Connect a LoRA Merge Settings node here to share common settings. Uses good defaults if not connected."
+      },
+      "evaluator": {
+        "name": "Evaluator",
+        "tooltip": "Connect an external evaluator to influence how configurations are ranked. Optional — the built-in scoring works well on its own."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Settings"
+      }
+    }
+  },
+  "LoRAMetadataReader": {
+    "display_name": "LoRA Metadata Reader",
+    "description": "Read prompts, descriptions, and metadata from a LoRA stack.",
+    "inputs": {
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Connect a LoRA Stack here. The stack passes through unchanged."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      },
+      "1": {
+        "name": "Prompt"
+      },
+      "2": {
+        "name": "Description"
+      },
+      "3": {
+        "name": "Metadata Info"
+      }
+    }
+  },
+  "LoRAMergeFormula": {
+    "display_name": "LoRA Merge Formula",
+    "description": "Define hierarchical LoRA merge order and group weights with a formula.",
+    "inputs": {
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "The LoRA stack to apply the merge formula to."
+      },
+      "formula": {
+        "name": "Formula",
+        "tooltip": "Merge formula defining hierarchical merge order. Numbers reference 1-indexed LoRA positions in the stack. Use + to combine and () to group sub-merges. Example: '(1+2) + 3' merges LoRAs 1 & 2 first, then blends with 3. Optional weights: '(1+2):0.6 + 3:0.4'. Leave empty for default flat merge."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      }
+    }
+  },
+  "LoRAExtractFromModel": {
+    "display_name": "LoRA Extract from Model",
+    "description": "Compare a base and finetuned model and extract their difference as a LoRA with SVD.",
+    "inputs": {
+      "base_model": {
+        "name": "Base Model",
+        "tooltip": "The original clean base model (e.g. the Flux or SDXL base checkpoint that was used as the starting point for finetuning)."
+      },
+      "finetuned_model": {
+        "name": "Finetuned Model",
+        "tooltip": "The finetuned model with a LoRA already baked into its weights."
+      },
+      "rank": {
+        "name": "Rank",
+        "tooltip": "Maximum rank for SVD decomposition. Used directly in 'fixed' mode; acts as an upper bound in 'auto' mode."
+      },
+      "rank_mode": {
+        "name": "Rank Mode",
+        "tooltip": "'auto': choose rank to retain the given energy fraction (recommended). 'fixed': always use exactly the specified rank.",
+        "options": {
+          "auto": "Auto",
+          "fixed": "Fixed"
+        }
+      },
+      "energy_threshold": {
+        "name": "Energy Threshold",
+        "tooltip": "Fraction of delta energy to retain when rank_mode='auto'. 0.99 = retain 99% of the signal. Higher = more accurate, higher rank."
+      },
+      "strength": {
+        "name": "Strength",
+        "tooltip": "Strength to assign this extracted LoRA in the output stack."
+      },
+      "base_clip": {
+        "name": "Base Clip",
+        "tooltip": "The CLIP encoder for the base model. Required to extract CLIP/text-encoder LoRA components (e.g. for SDXL). Leave disconnected to extract UNet components only."
+      },
+      "finetuned_clip": {
+        "name": "Finetuned Clip",
+        "tooltip": "The CLIP encoder for the finetuned model. Must be connected together with base_clip."
+      },
+      "lora_stack": {
+        "name": "LoRA Stack",
+        "tooltip": "Optional. Connect a LoRA Stack (or another extractor) here to merge the extracted LoRA TOGETHER with those LoRAs. The extracted LoRA is appended to the incoming stack. Leave disconnected to output the extracted LoRA on its own."
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      },
+      "1": {
+        "name": "LoRA Data"
+      }
+    }
+  },
+  "LoRACombinationGenerator": {
+    "display_name": "LoRA Combination Generator",
+    "description": "Generate deterministic two- or three-LoRA combinations.",
+    "inputs": {
+      "shuffle_order": {
+        "name": "Shuffle Order",
+        "tooltip": "Seed for shuffle order. Same value = same deterministic sequence."
+      },
+      "strength": {
+        "name": "Strength",
+        "tooltip": "Default strength applied to all LoRAs in each combination."
+      },
+      "combo_size": {
+        "name": "Combo Size",
+        "tooltip": "Generate pairs (2), triples (3), or both (2_and_3).",
+        "options": {
+          "2": "2",
+          "3": "3",
+          "2_and_3": "2 And 3"
+        }
+      },
+      "folder_filter": {
+        "name": "Folder Filter",
+        "tooltip": "Comma-separated prefixes to filter LoRAs (e.g. 'zit/,zib/' or 'sdxl/'). Empty = all LoRAs."
+      },
+      "rerun_mode": {
+        "name": "Rerun Mode",
+        "tooltip": "TEMPORARY: re-run all combos into a separate progress file (combo_progress_rerun.json). Use once to backfill per-prefix decisions, then disable and delete the side file."
+      },
+      "rerun_source": {
+        "name": "Rerun Source",
+        "tooltip": "Only meaningful when rerun_mode=True. 'shuffle' iterates all combos in shuffle order. 'original_progress' restricts iteration to combos present in the original combo_progress.json (replay exactly what was previously processed).",
+        "options": {
+          "shuffle": "Shuffle",
+          "original_progress": "Original Progress"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA Stack"
+      },
+      "1": {
+        "name": "Combo Info"
+      }
+    }
+  },
+  "LoRAEstimator": {
+    "display_name": "LoRA Merge Estimator",
+    "description": "Estimate LoRA combination rankings with an index and nearest-neighbor metrics.",
+    "inputs": {
+      "model": {
+        "name": "Model"
+      },
+      "lora_stack": {
+        "name": "LoRA Stack"
+      },
+      "k": {
+        "name": "K"
+      },
+      "rebuild_index": {
+        "name": "Rebuild Index",
+        "options": {
+          "auto": "Auto",
+          "force": "Force",
+          "skip": "Skip"
+        }
+      },
+      "top_n_output": {
+        "name": "Top N Output"
+      },
+      "clip": {
+        "name": "Clip"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Tuner Data"
+      },
+      "1": {
+        "name": "Estimator Report"
+      }
+    }
+  }
+}

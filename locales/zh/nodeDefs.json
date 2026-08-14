@@ -1,0 +1,2470 @@
+{
+  "LoRAStack": {
+    "display_name": "LoRA 堆栈",
+    "description": "将一个 LoRA 及其强度、冲突和筛选规则加入堆栈。",
+    "inputs": {
+      "lora_name": {
+        "name": "LoRA 名称",
+        "tooltip": "选择要加入堆栈的 LoRA 文件。"
+      },
+      "strength": {
+        "name": "强度",
+        "tooltip": "设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "conflict_mode": {
+        "name": "冲突模式",
+        "tooltip": "控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter": {
+        "name": "键筛选",
+        "tooltip": "限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve": {
+        "name": "保护",
+        "tooltip": "将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      }
+    }
+  },
+  "LoRAStackDynamic": {
+    "display_name": "LoRA 堆栈（动态）",
+    "description": "在单个节点中配置最多十个 LoRA，并支持简单/高级和下拉/文本输入。",
+    "inputs": {
+      "settings_visibility": {
+        "name": "设置显示",
+        "tooltip": "简单模式只显示单一强度；高级模式显示模型、CLIP、冲突和筛选选项。",
+        "options": {
+          "simple": "简单",
+          "advanced": "高级"
+        }
+      },
+      "input_mode": {
+        "name": "输入模式",
+        "tooltip": "下拉模式从文件列表选择；文本模式可输入短名称、相对路径或连接文本节点。",
+        "options": {
+          "dropdown": "下拉选择",
+          "text": "文本输入"
+        }
+      },
+      "lora_count": {
+        "name": "LoRA 数量",
+        "tooltip": "设置当前显示并参与处理的 LoRA 槽位数量。"
+      },
+      "enabled_1": {
+        "name": "启用 #1",
+        "tooltip": "LoRA #1：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_1": {
+        "name": "LoRA 名称 #1",
+        "tooltip": "LoRA #1：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_1": {
+        "name": "LoRA 名称（文本） #1",
+        "tooltip": "LoRA #1：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_1": {
+        "name": "强度 #1",
+        "tooltip": "LoRA #1：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_1": {
+        "name": "模型强度 #1",
+        "tooltip": "LoRA #1：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_1": {
+        "name": "CLIP 强度 #1",
+        "tooltip": "LoRA #1：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_1": {
+        "name": "冲突模式 #1",
+        "tooltip": "LoRA #1：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_1": {
+        "name": "键筛选 #1",
+        "tooltip": "LoRA #1：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_1": {
+        "name": "保护 #1",
+        "tooltip": "LoRA #1：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_2": {
+        "name": "启用 #2",
+        "tooltip": "LoRA #2：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_2": {
+        "name": "LoRA 名称 #2",
+        "tooltip": "LoRA #2：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_2": {
+        "name": "LoRA 名称（文本） #2",
+        "tooltip": "LoRA #2：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_2": {
+        "name": "强度 #2",
+        "tooltip": "LoRA #2：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_2": {
+        "name": "模型强度 #2",
+        "tooltip": "LoRA #2：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_2": {
+        "name": "CLIP 强度 #2",
+        "tooltip": "LoRA #2：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_2": {
+        "name": "冲突模式 #2",
+        "tooltip": "LoRA #2：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_2": {
+        "name": "键筛选 #2",
+        "tooltip": "LoRA #2：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_2": {
+        "name": "保护 #2",
+        "tooltip": "LoRA #2：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_3": {
+        "name": "启用 #3",
+        "tooltip": "LoRA #3：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_3": {
+        "name": "LoRA 名称 #3",
+        "tooltip": "LoRA #3：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_3": {
+        "name": "LoRA 名称（文本） #3",
+        "tooltip": "LoRA #3：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_3": {
+        "name": "强度 #3",
+        "tooltip": "LoRA #3：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_3": {
+        "name": "模型强度 #3",
+        "tooltip": "LoRA #3：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_3": {
+        "name": "CLIP 强度 #3",
+        "tooltip": "LoRA #3：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_3": {
+        "name": "冲突模式 #3",
+        "tooltip": "LoRA #3：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_3": {
+        "name": "键筛选 #3",
+        "tooltip": "LoRA #3：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_3": {
+        "name": "保护 #3",
+        "tooltip": "LoRA #3：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_4": {
+        "name": "启用 #4",
+        "tooltip": "LoRA #4：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_4": {
+        "name": "LoRA 名称 #4",
+        "tooltip": "LoRA #4：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_4": {
+        "name": "LoRA 名称（文本） #4",
+        "tooltip": "LoRA #4：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_4": {
+        "name": "强度 #4",
+        "tooltip": "LoRA #4：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_4": {
+        "name": "模型强度 #4",
+        "tooltip": "LoRA #4：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_4": {
+        "name": "CLIP 强度 #4",
+        "tooltip": "LoRA #4：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_4": {
+        "name": "冲突模式 #4",
+        "tooltip": "LoRA #4：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_4": {
+        "name": "键筛选 #4",
+        "tooltip": "LoRA #4：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_4": {
+        "name": "保护 #4",
+        "tooltip": "LoRA #4：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_5": {
+        "name": "启用 #5",
+        "tooltip": "LoRA #5：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_5": {
+        "name": "LoRA 名称 #5",
+        "tooltip": "LoRA #5：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_5": {
+        "name": "LoRA 名称（文本） #5",
+        "tooltip": "LoRA #5：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_5": {
+        "name": "强度 #5",
+        "tooltip": "LoRA #5：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_5": {
+        "name": "模型强度 #5",
+        "tooltip": "LoRA #5：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_5": {
+        "name": "CLIP 强度 #5",
+        "tooltip": "LoRA #5：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_5": {
+        "name": "冲突模式 #5",
+        "tooltip": "LoRA #5：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_5": {
+        "name": "键筛选 #5",
+        "tooltip": "LoRA #5：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_5": {
+        "name": "保护 #5",
+        "tooltip": "LoRA #5：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_6": {
+        "name": "启用 #6",
+        "tooltip": "LoRA #6：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_6": {
+        "name": "LoRA 名称 #6",
+        "tooltip": "LoRA #6：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_6": {
+        "name": "LoRA 名称（文本） #6",
+        "tooltip": "LoRA #6：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_6": {
+        "name": "强度 #6",
+        "tooltip": "LoRA #6：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_6": {
+        "name": "模型强度 #6",
+        "tooltip": "LoRA #6：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_6": {
+        "name": "CLIP 强度 #6",
+        "tooltip": "LoRA #6：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_6": {
+        "name": "冲突模式 #6",
+        "tooltip": "LoRA #6：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_6": {
+        "name": "键筛选 #6",
+        "tooltip": "LoRA #6：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_6": {
+        "name": "保护 #6",
+        "tooltip": "LoRA #6：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_7": {
+        "name": "启用 #7",
+        "tooltip": "LoRA #7：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_7": {
+        "name": "LoRA 名称 #7",
+        "tooltip": "LoRA #7：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_7": {
+        "name": "LoRA 名称（文本） #7",
+        "tooltip": "LoRA #7：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_7": {
+        "name": "强度 #7",
+        "tooltip": "LoRA #7：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_7": {
+        "name": "模型强度 #7",
+        "tooltip": "LoRA #7：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_7": {
+        "name": "CLIP 强度 #7",
+        "tooltip": "LoRA #7：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_7": {
+        "name": "冲突模式 #7",
+        "tooltip": "LoRA #7：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_7": {
+        "name": "键筛选 #7",
+        "tooltip": "LoRA #7：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_7": {
+        "name": "保护 #7",
+        "tooltip": "LoRA #7：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_8": {
+        "name": "启用 #8",
+        "tooltip": "LoRA #8：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_8": {
+        "name": "LoRA 名称 #8",
+        "tooltip": "LoRA #8：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_8": {
+        "name": "LoRA 名称（文本） #8",
+        "tooltip": "LoRA #8：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_8": {
+        "name": "强度 #8",
+        "tooltip": "LoRA #8：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_8": {
+        "name": "模型强度 #8",
+        "tooltip": "LoRA #8：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_8": {
+        "name": "CLIP 强度 #8",
+        "tooltip": "LoRA #8：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_8": {
+        "name": "冲突模式 #8",
+        "tooltip": "LoRA #8：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_8": {
+        "name": "键筛选 #8",
+        "tooltip": "LoRA #8：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_8": {
+        "name": "保护 #8",
+        "tooltip": "LoRA #8：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_9": {
+        "name": "启用 #9",
+        "tooltip": "LoRA #9：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_9": {
+        "name": "LoRA 名称 #9",
+        "tooltip": "LoRA #9：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_9": {
+        "name": "LoRA 名称（文本） #9",
+        "tooltip": "LoRA #9：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_9": {
+        "name": "强度 #9",
+        "tooltip": "LoRA #9：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_9": {
+        "name": "模型强度 #9",
+        "tooltip": "LoRA #9：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_9": {
+        "name": "CLIP 强度 #9",
+        "tooltip": "LoRA #9：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_9": {
+        "name": "冲突模式 #9",
+        "tooltip": "LoRA #9：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_9": {
+        "name": "键筛选 #9",
+        "tooltip": "LoRA #9：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_9": {
+        "name": "保护 #9",
+        "tooltip": "LoRA #9：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_10": {
+        "name": "启用 #10",
+        "tooltip": "LoRA #10：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "lora_name_10": {
+        "name": "LoRA 名称 #10",
+        "tooltip": "LoRA #10：选择要加入堆栈的 LoRA 文件。"
+      },
+      "lora_name_text_10": {
+        "name": "LoRA 名称（文本） #10",
+        "tooltip": "LoRA #10：输入 LoRA 文件名、相对路径或 None；可连接文本节点。"
+      },
+      "strength_10": {
+        "name": "强度 #10",
+        "tooltip": "LoRA #10：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_10": {
+        "name": "模型强度 #10",
+        "tooltip": "LoRA #10：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_10": {
+        "name": "CLIP 强度 #10",
+        "tooltip": "LoRA #10：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_10": {
+        "name": "冲突模式 #10",
+        "tooltip": "LoRA #10：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_10": {
+        "name": "键筛选 #10",
+        "tooltip": "LoRA #10：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_10": {
+        "name": "保护 #10",
+        "tooltip": "LoRA #10：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "base_model_filter": {
+        "name": "基础模型筛选",
+        "tooltip": "按基础模型类型筛选 LoRA 下拉列表，需要 ComfyUI-Lora-Manager。",
+        "options": {
+          "All": "全部"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      }
+    }
+  },
+  "LoRAOptimizer": {
+    "display_name": "LoRA 优化器（旧版）",
+    "description": "使用全部高级参数分析并合并 LoRA 堆栈。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "output_strength": {
+        "name": "输出强度",
+        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      },
+      "clip_strength_multiplier": {
+        "name": "CLIP 强度倍率",
+        "tooltip": "CLIP 相对模型输出强度的倍率。"
+      },
+      "auto_strength": {
+        "name": "自动强度",
+        "tooltip": "合并多个 LoRA 时自动降低单项强度，减少过饱和和失真。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "自动强度下限",
+        "tooltip": "限制自动强度最多可缩小到的倍率；-1 使用架构感知默认值。"
+      },
+      "free_vram_between_passes": {
+        "name": "阶段间释放显存",
+        "tooltip": "在分析与合并阶段之间释放可回收显存。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "vram_budget": {
+        "name": "显存预算",
+        "tooltip": "最终补丁可占用的空闲显存比例；实时显存不足时仍会安全放在内存。"
+      },
+      "optimization_mode": {
+        "name": "优化模式",
+        "tooltip": "按层自动决策、全局统一决策，或直接加法合并。",
+        "options": {
+          "per_prefix": "按层",
+          "global": "全局",
+          "additive": "直接加法"
+        }
+      },
+      "cache_patches": {
+        "name": "缓存补丁",
+        "tooltip": "在内存中保留完整合并结果以加速重复执行；关闭可节省内存。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "patch_compression": {
+        "name": "补丁压缩",
+        "tooltip": "智能压缩安全层、激进压缩全部层，或禁用压缩。",
+        "options": {
+          "smart": "智能",
+          "aggressive": "激进",
+          "disabled": "禁用"
+        }
+      },
+      "svd_device": {
+        "name": "SVD 设备",
+        "tooltip": "选择压缩 SVD 的计算设备；GPU 通常更快。",
+        "options": {
+          "gpu": "GPU",
+          "cpu": "CPU"
+        }
+      },
+      "normalize_keys": {
+        "name": "规范化键名",
+        "tooltip": "统一不同训练器生成的 LoRA 键名，并拆分融合 QKV 以便准确分析。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "sparsification": {
+        "name": "稀疏化",
+        "tooltip": "使用 DARE/DELLA 在全部权重或仅冲突区域降低 LoRA 干扰。",
+        "options": {
+          "disabled": "禁用",
+          "dare": "DARE",
+          "della": "DELLA",
+          "dare_conflict": "DARE（仅冲突）",
+          "della_conflict": "DELLA（仅冲突）"
+        }
+      },
+      "sparsification_density": {
+        "name": "稀疏密度",
+        "tooltip": "保留权重的比例；数值越低，丢弃越多。"
+      },
+      "dare_dampening": {
+        "name": "DARE 阻尼",
+        "tooltip": "降低 DARE 重缩放在低密度下的噪声放大。"
+      },
+      "merge_refinement": {
+        "name": "合并精炼",
+        "tooltip": "none 直接合并；refine 增加正交化和 TALL；full 再增加 Procrustes 对齐。",
+        "options": {
+          "none": "无",
+          "refine": "精炼",
+          "full": "完整"
+        }
+      },
+      "strategy_set": {
+        "name": "策略集",
+        "tooltip": "限制自动决策可使用的合并策略范围。",
+        "options": {
+          "full": "完整",
+          "no_slerp": "排除 SLERP",
+          "basic": "基础"
+        }
+      },
+      "architecture_preset": {
+        "name": "架构预设",
+        "tooltip": "按模型架构调整阈值；auto 会从 LoRA 键名自动识别。",
+        "options": {
+          "auto": "自动",
+          "sd_unet": "SD/SDXL UNet",
+          "dit": "DiT",
+          "acestep_dit": "ACE-Step DiT",
+          "llm": "LLM"
+        }
+      },
+      "merge_strategy_override": {
+        "name": "覆盖合并策略",
+        "tooltip": "连接冲突编辑器输出以覆盖自动选择的合并策略。"
+      },
+      "settings_source": {
+        "name": "设置来源",
+        "tooltip": "选择手动设置、实时 AutoTuner 设置或已加载调优数据。",
+        "options": {
+          "manual": "手动",
+          "from_autotuner": "来自 AutoTuner",
+          "from_tuner_data": "来自调优数据"
+        }
+      },
+      "tuner_data": {
+        "name": "调优数据",
+        "tooltip": "连接 AutoTuner 或已加载的调优数据。"
+      },
+      "decision_smoothing": {
+        "name": "决策平滑",
+        "tooltip": "将单层指标向同块平均值平滑，减少噪声导致的策略跳变。"
+      },
+      "smooth_slerp_gate": {
+        "name": "平滑 SLERP 门控",
+        "tooltip": "使用平滑余弦值判断是否进入 SLERP。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "CLIP"
+      },
+      "2": {
+        "name": "分析报告"
+      },
+      "3": {
+        "name": "调优数据"
+      },
+      "4": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "LoRAOptimizerSimple": {
+    "display_name": "LoRA 优化器",
+    "description": "使用推荐默认值和可选设置节点自动分析、合并并应用 LoRA。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "output_strength": {
+        "name": "输出强度",
+        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      },
+      "clip_strength_multiplier": {
+        "name": "CLIP 强度倍率",
+        "tooltip": "CLIP 相对模型输出强度的倍率。"
+      },
+      "tuner_data": {
+        "name": "调优数据",
+        "tooltip": "连接 AutoTuner 或已加载的调优数据。"
+      },
+      "settings": {
+        "name": "设置",
+        "tooltip": "连接设置节点以集中控制高级选项。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "CLIP"
+      },
+      "2": {
+        "name": "分析报告"
+      },
+      "3": {
+        "name": "调优数据"
+      },
+      "4": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "LoRAInlineChainOptions": {
+    "display_name": "LoRA Inline 链式选项",
+    "description": "按 Inline 加载链顺序为每个捕获的 LoRA 设置独立选项。",
+    "inputs": {
+      "settings_visibility": {
+        "name": "设置显示",
+        "tooltip": "简单模式只显示单一强度；高级模式显示模型、CLIP、冲突和筛选选项。",
+        "options": {
+          "simple": "简单",
+          "advanced": "高级"
+        }
+      },
+      "lora_count": {
+        "name": "LoRA 数量",
+        "tooltip": "设置当前显示并参与处理的 LoRA 槽位数量。"
+      },
+      "enabled_1": {
+        "name": "启用 #1",
+        "tooltip": "LoRA #1：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_1": {
+        "name": "强度 #1",
+        "tooltip": "LoRA #1：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_1": {
+        "name": "模型强度 #1",
+        "tooltip": "LoRA #1：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_1": {
+        "name": "CLIP 强度 #1",
+        "tooltip": "LoRA #1：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_1": {
+        "name": "冲突模式 #1",
+        "tooltip": "LoRA #1：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_1": {
+        "name": "键筛选 #1",
+        "tooltip": "LoRA #1：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_1": {
+        "name": "保护 #1",
+        "tooltip": "LoRA #1：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_2": {
+        "name": "启用 #2",
+        "tooltip": "LoRA #2：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_2": {
+        "name": "强度 #2",
+        "tooltip": "LoRA #2：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_2": {
+        "name": "模型强度 #2",
+        "tooltip": "LoRA #2：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_2": {
+        "name": "CLIP 强度 #2",
+        "tooltip": "LoRA #2：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_2": {
+        "name": "冲突模式 #2",
+        "tooltip": "LoRA #2：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_2": {
+        "name": "键筛选 #2",
+        "tooltip": "LoRA #2：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_2": {
+        "name": "保护 #2",
+        "tooltip": "LoRA #2：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_3": {
+        "name": "启用 #3",
+        "tooltip": "LoRA #3：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_3": {
+        "name": "强度 #3",
+        "tooltip": "LoRA #3：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_3": {
+        "name": "模型强度 #3",
+        "tooltip": "LoRA #3：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_3": {
+        "name": "CLIP 强度 #3",
+        "tooltip": "LoRA #3：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_3": {
+        "name": "冲突模式 #3",
+        "tooltip": "LoRA #3：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_3": {
+        "name": "键筛选 #3",
+        "tooltip": "LoRA #3：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_3": {
+        "name": "保护 #3",
+        "tooltip": "LoRA #3：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_4": {
+        "name": "启用 #4",
+        "tooltip": "LoRA #4：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_4": {
+        "name": "强度 #4",
+        "tooltip": "LoRA #4：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_4": {
+        "name": "模型强度 #4",
+        "tooltip": "LoRA #4：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_4": {
+        "name": "CLIP 强度 #4",
+        "tooltip": "LoRA #4：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_4": {
+        "name": "冲突模式 #4",
+        "tooltip": "LoRA #4：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_4": {
+        "name": "键筛选 #4",
+        "tooltip": "LoRA #4：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_4": {
+        "name": "保护 #4",
+        "tooltip": "LoRA #4：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_5": {
+        "name": "启用 #5",
+        "tooltip": "LoRA #5：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_5": {
+        "name": "强度 #5",
+        "tooltip": "LoRA #5：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_5": {
+        "name": "模型强度 #5",
+        "tooltip": "LoRA #5：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_5": {
+        "name": "CLIP 强度 #5",
+        "tooltip": "LoRA #5：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_5": {
+        "name": "冲突模式 #5",
+        "tooltip": "LoRA #5：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_5": {
+        "name": "键筛选 #5",
+        "tooltip": "LoRA #5：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_5": {
+        "name": "保护 #5",
+        "tooltip": "LoRA #5：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_6": {
+        "name": "启用 #6",
+        "tooltip": "LoRA #6：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_6": {
+        "name": "强度 #6",
+        "tooltip": "LoRA #6：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_6": {
+        "name": "模型强度 #6",
+        "tooltip": "LoRA #6：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_6": {
+        "name": "CLIP 强度 #6",
+        "tooltip": "LoRA #6：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_6": {
+        "name": "冲突模式 #6",
+        "tooltip": "LoRA #6：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_6": {
+        "name": "键筛选 #6",
+        "tooltip": "LoRA #6：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_6": {
+        "name": "保护 #6",
+        "tooltip": "LoRA #6：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_7": {
+        "name": "启用 #7",
+        "tooltip": "LoRA #7：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_7": {
+        "name": "强度 #7",
+        "tooltip": "LoRA #7：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_7": {
+        "name": "模型强度 #7",
+        "tooltip": "LoRA #7：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_7": {
+        "name": "CLIP 强度 #7",
+        "tooltip": "LoRA #7：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_7": {
+        "name": "冲突模式 #7",
+        "tooltip": "LoRA #7：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_7": {
+        "name": "键筛选 #7",
+        "tooltip": "LoRA #7：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_7": {
+        "name": "保护 #7",
+        "tooltip": "LoRA #7：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_8": {
+        "name": "启用 #8",
+        "tooltip": "LoRA #8：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_8": {
+        "name": "强度 #8",
+        "tooltip": "LoRA #8：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_8": {
+        "name": "模型强度 #8",
+        "tooltip": "LoRA #8：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_8": {
+        "name": "CLIP 强度 #8",
+        "tooltip": "LoRA #8：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_8": {
+        "name": "冲突模式 #8",
+        "tooltip": "LoRA #8：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_8": {
+        "name": "键筛选 #8",
+        "tooltip": "LoRA #8：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_8": {
+        "name": "保护 #8",
+        "tooltip": "LoRA #8：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_9": {
+        "name": "启用 #9",
+        "tooltip": "LoRA #9：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_9": {
+        "name": "强度 #9",
+        "tooltip": "LoRA #9：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_9": {
+        "name": "模型强度 #9",
+        "tooltip": "LoRA #9：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_9": {
+        "name": "CLIP 强度 #9",
+        "tooltip": "LoRA #9：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_9": {
+        "name": "冲突模式 #9",
+        "tooltip": "LoRA #9：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_9": {
+        "name": "键筛选 #9",
+        "tooltip": "LoRA #9：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_9": {
+        "name": "保护 #9",
+        "tooltip": "LoRA #9：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      },
+      "enabled_10": {
+        "name": "启用 #10",
+        "tooltip": "LoRA #10：临时启用或停用此项，不会从列表中删除它。"
+      },
+      "strength_10": {
+        "name": "强度 #10",
+        "tooltip": "LoRA #10：设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "model_strength_10": {
+        "name": "模型强度 #10",
+        "tooltip": "LoRA #10：设置 LoRA 对图像生成模型的影响强度。"
+      },
+      "clip_strength_10": {
+        "name": "CLIP 强度 #10",
+        "tooltip": "LoRA #10：设置 LoRA 对文本编码器和提示词理解的影响强度。"
+      },
+      "conflict_mode_10": {
+        "name": "冲突模式 #10",
+        "tooltip": "LoRA #10：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "key_filter_10": {
+        "name": "键筛选 #10",
+        "tooltip": "LoRA #10：限制此 LoRA 参与的权重键，可筛选共享、独有、音频或非音频层。",
+        "options": {
+          "all": "全部",
+          "shared_only": "仅共享键",
+          "unique_only": "仅独有键",
+          "audio_only": "仅音频层",
+          "no_audio": "仅非音频层"
+        }
+      },
+      "preserve_10": {
+        "name": "保护 #10",
+        "tooltip": "LoRA #10：将此 LoRA 作为受保护的风格层叠加，不参与 TIES 符号淘汰和稀疏裁剪。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "链式选项"
+      }
+    }
+  },
+  "LoRAOptimizerInline": {
+    "display_name": "LoRA 优化器（Inline 链）",
+    "description": "捕获已应用到模型的 LoRA 链，重新优化后一次性应用。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "output_strength": {
+        "name": "输出强度",
+        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+      },
+      "clip_strength_multiplier": {
+        "name": "CLIP 强度倍率",
+        "tooltip": "CLIP 相对模型输出强度的倍率。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      },
+      "settings": {
+        "name": "设置",
+        "tooltip": "连接设置节点以集中控制高级选项。"
+      },
+      "chain_options": {
+        "name": "链式选项",
+        "tooltip": "按 Inline 链顺序设置每个捕获 LoRA 的独立选项。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "CLIP"
+      },
+      "2": {
+        "name": "分析报告"
+      },
+      "3": {
+        "name": "调优数据"
+      },
+      "4": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "SaveMergedLoRA": {
+    "display_name": "保存合并 LoRA",
+    "description": "将优化器输出保存为可复用的 safetensors LoRA。",
+    "inputs": {
+      "lora_data": {
+        "name": "LoRA 数据",
+        "tooltip": "连接 LoRA Optimizer 输出的可保存或可转换 LoRA 数据。"
+      },
+      "save_folder": {
+        "name": "保存文件夹",
+        "tooltip": "选择 ComfyUI 配置中的 LoRA 保存目录。"
+      },
+      "filename": {
+        "name": "文件名",
+        "tooltip": "保存文件名，可包含子目录；自动添加 .safetensors。"
+      },
+      "save_rank": {
+        "name": "保存秩",
+        "tooltip": "0 自动使用输入总秩；非零值用 SVD 压缩到指定秩。"
+      },
+      "bake_strength": {
+        "name": "烘焙强度",
+        "tooltip": "启用后，将当前合并强度烘焙到保存文件中。"
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "写入文件元数据的示例提示词或触发词。"
+      },
+      "description": {
+        "name": "描述",
+        "tooltip": "写入文件元数据的说明或备注。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文件路径"
+      }
+    }
+  },
+  "BuildAutoTunerPythonEvaluator": {
+    "display_name": "构建 AutoTuner Python 评估器",
+    "description": "接入本地 Python 评估函数，为 AutoTuner 补充外部评分。",
+    "inputs": {
+      "module_path": {
+        "name": "模块路径",
+        "tooltip": "包含外部评估函数的 Python 文件路径或可导入模块名。"
+      },
+      "callable_name": {
+        "name": "函数名",
+        "tooltip": "要导入并由 AutoTuner 调用的函数名。"
+      },
+      "combine_mode": {
+        "name": "组合模式",
+        "tooltip": "控制内置评分与外部评估器评分的组合方式。",
+        "options": {
+          "blend": "混合",
+          "external_only": "仅外部评分",
+          "multiply": "相乘"
+        }
+      },
+      "weight": {
+        "name": "权重",
+        "tooltip": "blend 模式下外部评估器的权重。"
+      },
+      "context_json": {
+        "name": "上下文 JSON",
+        "tooltip": "传给外部评估器的可选 JSON 对象。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "评估器"
+      }
+    }
+  },
+  "LoRAConflictEditor": {
+    "display_name": "LoRA 冲突编辑器",
+    "description": "手动覆盖每个 LoRA 的冲突规则和目标合并策略。",
+    "inputs": {
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "merge_strategy": {
+        "name": "合并策略",
+        "tooltip": "选择自动、TIES、Consensus、SLERP、加权平均或直接加法。",
+        "options": {
+          "auto": "自动",
+          "ties": "TIES",
+          "consensus": "Consensus",
+          "slerp": "SLERP",
+          "weighted_average": "加权平均",
+          "weighted_sum": "直接加法"
+        }
+      },
+      "conflict_mode_1": {
+        "name": "冲突模式 #1",
+        "tooltip": "LoRA #1：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_2": {
+        "name": "冲突模式 #2",
+        "tooltip": "LoRA #2：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_3": {
+        "name": "冲突模式 #3",
+        "tooltip": "LoRA #3：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_4": {
+        "name": "冲突模式 #4",
+        "tooltip": "LoRA #4：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_5": {
+        "name": "冲突模式 #5",
+        "tooltip": "LoRA #5：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_6": {
+        "name": "冲突模式 #6",
+        "tooltip": "LoRA #6：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_7": {
+        "name": "冲突模式 #7",
+        "tooltip": "LoRA #7：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_8": {
+        "name": "冲突模式 #8",
+        "tooltip": "LoRA #8：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_9": {
+        "name": "冲突模式 #9",
+        "tooltip": "LoRA #9：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      },
+      "conflict_mode_10": {
+        "name": "冲突模式 #10",
+        "tooltip": "LoRA #10：控制此 LoRA 在冲突权重中的参与范围：全部、低冲突或高冲突。",
+        "options": {
+          "auto": "自动",
+          "all": "全部",
+          "low_conflict": "低冲突",
+          "high_conflict": "高冲突"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      },
+      "1": {
+        "name": "分析报告"
+      },
+      "2": {
+        "name": "合并策略"
+      }
+    }
+  },
+  "MergedLoRAToHook": {
+    "display_name": "合并 LoRA 转 Hook",
+    "description": "将合并 LoRA 数据转换为 ComfyUI Hook。",
+    "inputs": {
+      "lora_data": {
+        "name": "LoRA 数据",
+        "tooltip": "连接 LoRA Optimizer 输出的可保存或可转换 LoRA 数据。"
+      },
+      "prev_hooks": {
+        "name": "前置 Hooks",
+        "tooltip": "可选连接已有 Hook 链。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Hooks"
+      }
+    }
+  },
+  "MergedLoRAToWanVideo": {
+    "display_name": "（开发中）合并 LoRA 转 WanVideo",
+    "description": "将合并 LoRA 数据应用到 WanVideo 模型。",
+    "inputs": {
+      "wan_model": {
+        "name": "WanVideo 模型",
+        "tooltip": "连接 WanVideo 模型。"
+      },
+      "lora_data": {
+        "name": "LoRA 数据",
+        "tooltip": "连接 LoRA Optimizer 输出的可保存或可转换 LoRA 数据。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      }
+    }
+  },
+  "WanVideoLoRAOptimizer": {
+    "display_name": "（开发中）WanVideo LoRA 优化器",
+    "description": "为 WanVideo 模型提供旧版高级优化入口。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "output_strength": {
+        "name": "输出强度",
+        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+      },
+      "auto_strength": {
+        "name": "自动强度",
+        "tooltip": "合并多个 LoRA 时自动降低单项强度，减少过饱和和失真。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "自动强度下限",
+        "tooltip": "限制自动强度最多可缩小到的倍率；-1 使用架构感知默认值。"
+      },
+      "vram_budget": {
+        "name": "显存预算",
+        "tooltip": "最终补丁可占用的空闲显存比例；实时显存不足时仍会安全放在内存。"
+      },
+      "optimization_mode": {
+        "name": "优化模式",
+        "tooltip": "按层自动决策、全局统一决策，或直接加法合并。",
+        "options": {
+          "per_prefix": "按层",
+          "global": "全局",
+          "additive": "直接加法"
+        }
+      },
+      "cache_patches": {
+        "name": "缓存补丁",
+        "tooltip": "在内存中保留完整合并结果以加速重复执行；关闭可节省内存。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "patch_compression": {
+        "name": "补丁压缩",
+        "tooltip": "智能压缩安全层、激进压缩全部层，或禁用压缩。",
+        "options": {
+          "smart": "智能",
+          "aggressive": "激进",
+          "disabled": "禁用"
+        }
+      },
+      "svd_device": {
+        "name": "SVD 设备",
+        "tooltip": "选择压缩 SVD 的计算设备；GPU 通常更快。",
+        "options": {
+          "gpu": "GPU",
+          "cpu": "CPU"
+        }
+      },
+      "normalize_keys": {
+        "name": "规范化键名",
+        "tooltip": "统一不同训练器生成的 LoRA 键名，并拆分融合 QKV 以便准确分析。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "sparsification": {
+        "name": "稀疏化",
+        "tooltip": "使用 DARE/DELLA 在全部权重或仅冲突区域降低 LoRA 干扰。",
+        "options": {
+          "disabled": "禁用",
+          "dare": "DARE",
+          "della": "DELLA",
+          "dare_conflict": "DARE（仅冲突）",
+          "della_conflict": "DELLA（仅冲突）"
+        }
+      },
+      "sparsification_density": {
+        "name": "稀疏密度",
+        "tooltip": "保留权重的比例；数值越低，丢弃越多。"
+      },
+      "dare_dampening": {
+        "name": "DARE 阻尼",
+        "tooltip": "降低 DARE 重缩放在低密度下的噪声放大。"
+      },
+      "merge_refinement": {
+        "name": "合并精炼",
+        "tooltip": "none 直接合并；refine 增加正交化和 TALL；full 再增加 Procrustes 对齐。",
+        "options": {
+          "none": "无",
+          "refine": "精炼",
+          "full": "完整"
+        }
+      },
+      "strategy_set": {
+        "name": "策略集",
+        "tooltip": "限制自动决策可使用的合并策略范围。",
+        "options": {
+          "full": "完整",
+          "no_slerp": "排除 SLERP",
+          "basic": "基础"
+        }
+      },
+      "architecture_preset": {
+        "name": "架构预设",
+        "tooltip": "按模型架构调整阈值；auto 会从 LoRA 键名自动识别。",
+        "options": {
+          "auto": "自动",
+          "dit": "DiT",
+          "sd_unet": "SD/SDXL UNet",
+          "llm": "LLM"
+        }
+      },
+      "merge_strategy_override": {
+        "name": "覆盖合并策略",
+        "tooltip": "连接冲突编辑器输出以覆盖自动选择的合并策略。"
+      },
+      "decision_smoothing": {
+        "name": "决策平滑",
+        "tooltip": "将单层指标向同块平均值平滑，减少噪声导致的策略跳变。"
+      },
+      "smooth_slerp_gate": {
+        "name": "平滑 SLERP 门控",
+        "tooltip": "使用平滑余弦值判断是否进入 SLERP。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "分析报告"
+      },
+      "2": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "LoRAAutoTuner": {
+    "display_name": "LoRA 自动调优器",
+    "description": "扫描候选设置、评分并输出最佳合并或调优数据。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "output_strength": {
+        "name": "输出强度",
+        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      },
+      "clip_strength_multiplier": {
+        "name": "CLIP 强度倍率",
+        "tooltip": "CLIP 相对模型输出强度的倍率。"
+      },
+      "top_n": {
+        "name": "候选数量",
+        "tooltip": "进入真实合并评估的最高排名候选数量。"
+      },
+      "normalize_keys": {
+        "name": "规范化键名",
+        "tooltip": "统一不同训练器生成的 LoRA 键名，并拆分融合 QKV 以便准确分析。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "scoring_svd": {
+        "name": "SVD 评分",
+        "tooltip": "控制评分阶段是否使用合并质量或有效秩 SVD 指标。",
+        "options": {
+          "disabled": "禁用",
+          "merge_quality": "合并质量",
+          "lora_rank": "LoRA 有效秩",
+          "full": "完整"
+        }
+      },
+      "scoring_device": {
+        "name": "评分设备",
+        "tooltip": "选择评分计算设备。",
+        "options": {
+          "cpu": "CPU",
+          "gpu": "GPU"
+        }
+      },
+      "architecture_preset": {
+        "name": "架构预设",
+        "tooltip": "按模型架构调整阈值；auto 会从 LoRA 键名自动识别。",
+        "options": {
+          "auto": "自动",
+          "sd_unet": "SD/SDXL UNet",
+          "dit": "DiT",
+          "acestep_dit": "ACE-Step DiT",
+          "llm": "LLM"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "自动强度下限",
+        "tooltip": "限制自动强度最多可缩小到的倍率；-1 使用架构感知默认值。"
+      },
+      "evaluator": {
+        "name": "评估器",
+        "tooltip": "可选连接外部评估器，与内置指标共同评分。"
+      },
+      "community_cache": {
+        "name": "社区缓存",
+        "tooltip": "控制 Hugging Face 社区缓存的上传和下载行为。",
+        "options": {
+          "disabled": "禁用",
+          "upload_only": "仅上传",
+          "upload_and_download": "上传并下载"
+        }
+      },
+      "cache_patches": {
+        "name": "缓存补丁",
+        "tooltip": "在内存中保留完整合并结果以加速重复执行；关闭可节省内存。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "diff_cache_mode": {
+        "name": "差分缓存模式",
+        "tooltip": "控制候选之间的 LoRA 差分缓存位置和策略。",
+        "options": {
+          "disabled": "禁用",
+          "auto": "自动",
+          "ram": "内存",
+          "disk": "磁盘"
+        }
+      },
+      "diff_cache_ram_pct": {
+        "name": "差分缓存内存占比",
+        "tooltip": "auto 模式可用于差分缓存的空闲系统内存比例。"
+      },
+      "vram_budget": {
+        "name": "显存预算",
+        "tooltip": "最终补丁可占用的空闲显存比例；实时显存不足时仍会安全放在内存。"
+      },
+      "scoring_speed": {
+        "name": "评分速度",
+        "tooltip": "控制每个候选评分的目标层采样密度。",
+        "options": {
+          "full": "完整",
+          "fast": "快速",
+          "turbo": "极速",
+          "turbo+": "极速+"
+        }
+      },
+      "scoring_formula": {
+        "name": "评分公式",
+        "tooltip": "选择 AutoTuner 第二阶段使用的评分公式版本。",
+        "options": {
+          "v2": "v2（推荐）",
+          "v1": "v1（旧版）"
+        }
+      },
+      "output_mode": {
+        "name": "输出模式",
+        "tooltip": "merge 输出最佳合并；tuning_only 仅输出设置并透传基础模型。",
+        "options": {
+          "merge": "执行合并",
+          "tuning_only": "仅调优"
+        }
+      },
+      "decision_smoothing": {
+        "name": "决策平滑",
+        "tooltip": "将单层指标向同块平均值平滑，减少噪声导致的策略跳变。"
+      },
+      "smooth_slerp_gate": {
+        "name": "平滑 SLERP 门控",
+        "tooltip": "使用平滑余弦值判断是否进入 SLERP。"
+      },
+      "memory_mode": {
+        "name": "记忆模式",
+        "tooltip": "跨会话复用、只读或清除 AutoTuner 的持久结果。",
+        "options": {
+          "disabled": "禁用",
+          "auto": "自动",
+          "auto_ignore_strength": "自动（忽略强度）",
+          "read_only": "只读",
+          "clear_and_run": "清除并重跑"
+        }
+      },
+      "selection": {
+        "name": "选择名次",
+        "tooltip": "选择要应用的候选排名，1 表示第一名。"
+      },
+      "record_dataset": {
+        "name": "记录数据集",
+        "tooltip": "将完整分析与候选评分记录为阈值研究数据集。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "CLIP"
+      },
+      "2": {
+        "name": "报告"
+      },
+      "3": {
+        "name": "分析报告"
+      },
+      "4": {
+        "name": "调优数据"
+      },
+      "5": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "LoRAMergeSelector": {
+    "display_name": "LoRA 合并选择器",
+    "description": "从已有 AutoTuner 结果中选择并应用指定排名配置。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "tuner_data": {
+        "name": "调优数据",
+        "tooltip": "连接 AutoTuner 或已加载的调优数据。"
+      },
+      "selection": {
+        "name": "选择名次",
+        "tooltip": "选择要应用的候选排名，1 表示第一名。"
+      },
+      "output_strength": {
+        "name": "输出强度",
+        "tooltip": "合并结果的总强度；-1 使用自动建议值。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      },
+      "clip_strength_multiplier": {
+        "name": "CLIP 强度倍率",
+        "tooltip": "CLIP 相对模型输出强度的倍率。"
+      },
+      "auto_strength_floor": {
+        "name": "自动强度下限",
+        "tooltip": "限制自动强度最多可缩小到的倍率；-1 使用架构感知默认值。"
+      },
+      "decision_smoothing": {
+        "name": "决策平滑",
+        "tooltip": "将单层指标向同块平均值平滑，减少噪声导致的策略跳变。"
+      },
+      "vram_budget": {
+        "name": "显存预算",
+        "tooltip": "最终补丁可占用的空闲显存比例；实时显存不足时仍会安全放在内存。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "CLIP"
+      },
+      "2": {
+        "name": "报告"
+      },
+      "3": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "SaveTunerData": {
+    "display_name": "保存调优数据",
+    "description": "把 AutoTuner 结果保存到用户目录。",
+    "inputs": {
+      "tuner_data": {
+        "name": "调优数据",
+        "tooltip": "连接 AutoTuner 或已加载的调优数据。"
+      },
+      "save_folder": {
+        "name": "保存文件夹",
+        "tooltip": "选择 ComfyUI 配置中的 LoRA 保存目录。"
+      },
+      "filename": {
+        "name": "文件名",
+        "tooltip": "保存文件名，可包含子目录；自动添加 .safetensors。"
+      },
+      "overwrite": {
+        "name": "覆盖文件",
+        "tooltip": "允许覆盖已有文件；关闭时自动追加序号。"
+      },
+      "prompt": {
+        "name": "提示词",
+        "tooltip": "写入文件元数据的示例提示词或触发词。"
+      },
+      "description": {
+        "name": "描述",
+        "tooltip": "写入文件元数据的说明或备注。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文件路径"
+      }
+    }
+  },
+  "LoadTunerData": {
+    "display_name": "加载调优数据",
+    "description": "加载已保存的 AutoTuner 结果和元数据。",
+    "inputs": {
+      "tuner_data_file": {
+        "name": "调优数据文件",
+        "tooltip": "选择之前保存的调优数据文件。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "调优数据"
+      },
+      "1": {
+        "name": "提示词"
+      },
+      "2": {
+        "name": "描述"
+      },
+      "3": {
+        "name": "元数据信息"
+      }
+    }
+  },
+  "LoRACompatibilityAnalyzer": {
+    "display_name": "LoRA 兼容性分析器",
+    "description": "分析 LoRA 之间的架构、键覆盖和冲突兼容性，并可自动创建分组节点。",
+    "inputs": {
+      "enabled": {
+        "name": "启用",
+        "tooltip": "临时启用或停用此项，不会从列表中删除它。"
+      },
+      "create_nodes": {
+        "name": "创建节点",
+        "tooltip": "根据兼容性分析结果自动创建 LoRA Stack 和加载节点。"
+      },
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "报告"
+      },
+      "1": {
+        "name": "兼容性映射"
+      }
+    }
+  },
+  "LoRAMergeSettings": {
+    "display_name": "LoRA 合并设置",
+    "description": "集中配置多个优化器共享的合并基础参数。",
+    "inputs": {
+      "normalize_keys": {
+        "name": "规范化键名",
+        "tooltip": "统一不同训练器生成的 LoRA 键名，并拆分融合 QKV 以便准确分析。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "architecture_preset": {
+        "name": "架构预设",
+        "tooltip": "按模型架构调整阈值；auto 会从 LoRA 键名自动识别。",
+        "options": {
+          "auto": "自动",
+          "sd_unet": "SD/SDXL UNet",
+          "dit": "DiT",
+          "acestep_dit": "ACE-Step DiT",
+          "llm": "LLM"
+        }
+      },
+      "auto_strength_floor": {
+        "name": "自动强度下限",
+        "tooltip": "限制自动强度最多可缩小到的倍率；-1 使用架构感知默认值。"
+      },
+      "decision_smoothing": {
+        "name": "决策平滑",
+        "tooltip": "将单层指标向同块平均值平滑，减少噪声导致的策略跳变。"
+      },
+      "smooth_slerp_gate": {
+        "name": "平滑 SLERP 门控",
+        "tooltip": "使用平滑余弦值判断是否进入 SLERP。"
+      },
+      "vram_budget": {
+        "name": "显存预算",
+        "tooltip": "最终补丁可占用的空闲显存比例；实时显存不足时仍会安全放在内存。"
+      },
+      "cache_patches": {
+        "name": "缓存补丁",
+        "tooltip": "在内存中保留完整合并结果以加速重复执行；关闭可节省内存。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "auto_strength_floor_mode": {
+        "name": "强度下限模式",
+        "tooltip": "自动使用架构感知下限，或手动使用上方滑块。",
+        "options": {
+          "auto": "自动",
+          "manual": "手动"
+        }
+      },
+      "star_eta": {
+        "name": "STAR 保留率",
+        "tooltip": "每个 LoRA 的 STAR 频谱保留率；100 表示关闭。"
+      },
+      "tame_layers": {
+        "name": "TAME 强度",
+        "tooltip": "限制异常高能量层的强度；0 表示关闭。"
+      },
+      "tame_threshold": {
+        "name": "TAME 阈值",
+        "tooltip": "相对基础权重范数超过此比例时将层视为过热。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "合并设置"
+      }
+    }
+  },
+  "LoRAOptimizerSettings": {
+    "display_name": "LoRA 优化器设置",
+    "description": "集中配置 LoRA Optimizer 的高级行为。",
+    "inputs": {
+      "auto_strength": {
+        "name": "自动强度",
+        "tooltip": "合并多个 LoRA 时自动降低单项强度，减少过饱和和失真。",
+        "options": {
+          "enabled": "启用",
+          "disabled": "禁用"
+        }
+      },
+      "optimization_mode": {
+        "name": "优化模式",
+        "tooltip": "按层自动决策、全局统一决策，或直接加法合并。",
+        "options": {
+          "per_prefix": "按层",
+          "global": "全局",
+          "additive": "直接加法"
+        }
+      },
+      "merge_refinement": {
+        "name": "合并精炼",
+        "tooltip": "none 直接合并；refine 增加正交化和 TALL；full 再增加 Procrustes 对齐。",
+        "options": {
+          "none": "无",
+          "refine": "精炼",
+          "full": "完整"
+        }
+      },
+      "sparsification": {
+        "name": "稀疏化",
+        "tooltip": "使用 DARE/DELLA 在全部权重或仅冲突区域降低 LoRA 干扰。",
+        "options": {
+          "disabled": "禁用",
+          "dare": "DARE",
+          "della": "DELLA",
+          "dare_conflict": "DARE（仅冲突）",
+          "della_conflict": "DELLA（仅冲突）"
+        }
+      },
+      "sparsification_density": {
+        "name": "稀疏密度",
+        "tooltip": "保留权重的比例；数值越低，丢弃越多。"
+      },
+      "dare_dampening": {
+        "name": "DARE 阻尼",
+        "tooltip": "降低 DARE 重缩放在低密度下的噪声放大。"
+      },
+      "patch_compression": {
+        "name": "补丁压缩",
+        "tooltip": "智能压缩安全层、激进压缩全部层，或禁用压缩。",
+        "options": {
+          "smart": "智能",
+          "aggressive": "激进",
+          "disabled": "禁用"
+        }
+      },
+      "svd_device": {
+        "name": "SVD 设备",
+        "tooltip": "选择压缩 SVD 的计算设备；GPU 通常更快。",
+        "options": {
+          "gpu": "GPU",
+          "cpu": "CPU"
+        }
+      },
+      "free_vram_between_passes": {
+        "name": "阶段间释放显存",
+        "tooltip": "在分析与合并阶段之间释放可回收显存。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "strategy_set": {
+        "name": "策略集",
+        "tooltip": "限制自动决策可使用的合并策略范围。",
+        "options": {
+          "full": "完整",
+          "no_slerp": "排除 SLERP",
+          "basic": "基础"
+        }
+      },
+      "merge_settings": {
+        "name": "合并设置",
+        "tooltip": "连接共享合并设置；未连接时使用推荐默认值。"
+      },
+      "merge_strategy_override": {
+        "name": "覆盖合并策略",
+        "tooltip": "连接冲突编辑器输出以覆盖自动选择的合并策略。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "设置"
+      }
+    }
+  },
+  "LoRAAutoTunerSettings": {
+    "display_name": "LoRA 自动调优设置",
+    "description": "集中配置 AutoTuner 的搜索、评分、缓存与输出。",
+    "inputs": {
+      "top_n": {
+        "name": "候选数量",
+        "tooltip": "进入真实合并评估的最高排名候选数量。"
+      },
+      "scoring_svd": {
+        "name": "SVD 评分",
+        "tooltip": "控制评分阶段是否使用合并质量或有效秩 SVD 指标。",
+        "options": {
+          "disabled": "禁用",
+          "merge_quality": "合并质量",
+          "lora_rank": "LoRA 有效秩",
+          "full": "完整"
+        }
+      },
+      "scoring_device": {
+        "name": "评分设备",
+        "tooltip": "选择评分计算设备。",
+        "options": {
+          "cpu": "CPU",
+          "gpu": "GPU"
+        }
+      },
+      "scoring_speed": {
+        "name": "评分速度",
+        "tooltip": "控制每个候选评分的目标层采样密度。",
+        "options": {
+          "full": "完整",
+          "fast": "快速",
+          "turbo": "极速",
+          "turbo+": "极速+"
+        }
+      },
+      "scoring_formula": {
+        "name": "评分公式",
+        "tooltip": "选择 AutoTuner 第二阶段使用的评分公式版本。",
+        "options": {
+          "v2": "v2（推荐）",
+          "v1": "v1（旧版）"
+        }
+      },
+      "diff_cache_mode": {
+        "name": "差分缓存模式",
+        "tooltip": "控制候选之间的 LoRA 差分缓存位置和策略。",
+        "options": {
+          "disabled": "禁用",
+          "auto": "自动",
+          "ram": "内存",
+          "disk": "磁盘"
+        }
+      },
+      "diff_cache_ram_pct": {
+        "name": "差分缓存内存占比",
+        "tooltip": "auto 模式可用于差分缓存的空闲系统内存比例。"
+      },
+      "community_cache": {
+        "name": "社区缓存",
+        "tooltip": "控制 Hugging Face 社区缓存的上传和下载行为。",
+        "options": {
+          "disabled": "禁用",
+          "upload_only": "仅上传",
+          "upload_and_download": "上传并下载"
+        }
+      },
+      "memory_mode": {
+        "name": "记忆模式",
+        "tooltip": "跨会话复用、只读或清除 AutoTuner 的持久结果。",
+        "options": {
+          "disabled": "禁用",
+          "auto": "自动",
+          "auto_ignore_strength": "自动（忽略强度）",
+          "read_only": "只读",
+          "clear_and_run": "清除并重跑"
+        }
+      },
+      "selection": {
+        "name": "选择名次",
+        "tooltip": "选择要应用的候选排名，1 表示第一名。"
+      },
+      "record_dataset": {
+        "name": "记录数据集",
+        "tooltip": "将完整分析与候选评分记录为阈值研究数据集。",
+        "options": {
+          "disabled": "禁用",
+          "enabled": "启用"
+        }
+      },
+      "merge_settings": {
+        "name": "合并设置",
+        "tooltip": "连接共享合并设置；未连接时使用推荐默认值。"
+      },
+      "evaluator": {
+        "name": "评估器",
+        "tooltip": "可选连接外部评估器，与内置指标共同评分。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "设置"
+      }
+    }
+  },
+  "LoRAMetadataReader": {
+    "display_name": "LoRA 元数据读取器",
+    "description": "读取堆栈内 LoRA 的提示词、描述和元数据。",
+    "inputs": {
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      },
+      "1": {
+        "name": "提示词"
+      },
+      "2": {
+        "name": "描述"
+      },
+      "3": {
+        "name": "元数据信息"
+      }
+    }
+  },
+  "LoRAMergeFormula": {
+    "display_name": "LoRA 合并公式",
+    "description": "用公式定义 LoRA 的分层合并顺序和分组权重。",
+    "inputs": {
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "formula": {
+        "name": "合并公式",
+        "tooltip": "使用 1 开始的 LoRA 序号、+、括号和可选权重定义分层合并顺序。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      }
+    }
+  },
+  "LoRAExtractFromModel": {
+    "display_name": "从模型提取 LoRA",
+    "description": "比较基础模型与微调模型，并用 SVD 提取 LoRA。",
+    "inputs": {
+      "base_model": {
+        "name": "基础模型",
+        "tooltip": "LoRA 微调前的原始基础模型。"
+      },
+      "finetuned_model": {
+        "name": "微调模型",
+        "tooltip": "已经烘焙微调差分的模型。"
+      },
+      "rank": {
+        "name": "秩",
+        "tooltip": "SVD 分解的最大秩。"
+      },
+      "rank_mode": {
+        "name": "秩模式",
+        "tooltip": "auto 按能量选择秩；fixed 固定使用指定秩。",
+        "options": {
+          "auto": "自动",
+          "fixed": "固定"
+        }
+      },
+      "energy_threshold": {
+        "name": "能量阈值",
+        "tooltip": "auto 秩模式需要保留的差分能量比例。"
+      },
+      "strength": {
+        "name": "强度",
+        "tooltip": "设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "base_clip": {
+        "name": "基础 CLIP",
+        "tooltip": "可选基础 CLIP；与微调 CLIP 同时连接可提取文本编码器差分。"
+      },
+      "finetuned_clip": {
+        "name": "微调 CLIP",
+        "tooltip": "微调后的 CLIP，必须与基础 CLIP 同时连接。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      },
+      "1": {
+        "name": "LoRA 数据"
+      }
+    }
+  },
+  "LoRACombinationGenerator": {
+    "display_name": "LoRA 组合生成器",
+    "description": "按确定性顺序生成 LoRA 两项或三项组合。",
+    "inputs": {
+      "shuffle_order": {
+        "name": "打乱种子",
+        "tooltip": "组合顺序的确定性随机种子。"
+      },
+      "strength": {
+        "name": "强度",
+        "tooltip": "设置此 LoRA 对最终结果的影响强度；1.0 为完整强度。"
+      },
+      "combo_size": {
+        "name": "组合大小",
+        "tooltip": "生成两两组合、三项组合或同时生成两者。",
+        "options": {
+          "2": "两项",
+          "3": "三项",
+          "2_and_3": "两项和三项"
+        }
+      },
+      "folder_filter": {
+        "name": "文件夹筛选",
+        "tooltip": "用逗号分隔的相对路径前缀筛选 LoRA。"
+      },
+      "rerun_mode": {
+        "name": "重跑模式",
+        "tooltip": "将组合重新运行到独立进度文件，供一次性回填使用。"
+      },
+      "rerun_source": {
+        "name": "重跑来源",
+        "tooltip": "选择全部打乱组合或仅重放原进度文件中的组合。",
+        "options": {
+          "shuffle": "打乱顺序",
+          "original_progress": "原进度记录"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      },
+      "1": {
+        "name": "组合信息"
+      }
+    }
+  },
+  "LoRAEstimator": {
+    "display_name": "LoRA 合并估算器",
+    "description": "用索引和近邻指标快速估算 LoRA 组合排名。",
+    "inputs": {
+      "model": {
+        "name": "模型",
+        "tooltip": "连接要应用合并 LoRA 的基础模型。"
+      },
+      "lora_stack": {
+        "name": "LoRA 堆栈",
+        "tooltip": "连接另一个 LoRA Stack 以继续扩展堆栈。"
+      },
+      "k": {
+        "name": "K 值",
+        "tooltip": "近邻估算使用的 K 值。"
+      },
+      "rebuild_index": {
+        "name": "重建索引",
+        "tooltip": "控制组合索引自动、强制重建或跳过重建。",
+        "options": {
+          "auto": "自动",
+          "force": "强制重建",
+          "skip": "跳过"
+        }
+      },
+      "top_n_output": {
+        "name": "输出数量",
+        "tooltip": "输出最高排名组合的数量。"
+      },
+      "clip": {
+        "name": "CLIP",
+        "tooltip": "可选文本编码器；连接后同时合并并应用 CLIP LoRA。"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "调优数据"
+      },
+      "1": {
+        "name": "估算报告"
+      }
+    }
+  }
+}

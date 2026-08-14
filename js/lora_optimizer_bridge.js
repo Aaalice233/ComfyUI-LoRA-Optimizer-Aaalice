@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import { t } from "./i18n.js";
 
 /**
  * AutoTuner ↔ Optimizer Bridge
@@ -180,9 +181,9 @@ const SWAP_PAIRS = {
     "LoRAAutoTuner": "LoRAOptimizer",
 };
 
-const SWAP_LABELS = {
-    "LoRAOptimizer": "Swap to LoRA AutoTuner",
-    "LoRAAutoTuner": "Swap to LoRA Optimizer",
+const SWAP_LABEL_KEYS = {
+    "LoRAOptimizer": "swapToAutoTuner",
+    "LoRAAutoTuner": "swapToOptimizer",
 };
 
 // Output slot name mapping:  src output name → dst output name
@@ -271,16 +272,16 @@ function swapNode(oldNode) {
 }
 
 function addSwapMenuOption(node) {
-    const label = SWAP_LABELS[node.comfyClass];
-    if (!label) return;
+    const labelKey = SWAP_LABEL_KEYS[node.comfyClass];
+    if (!labelKey) return;
 
     const origGetExtra = node.getExtraMenuOptions;
     node.getExtraMenuOptions = function (_, options) {
         if (origGetExtra) origGetExtra.apply(this, arguments);
 
-        // Insert before the last item (which is usually "Properties")
+        // Resolve on menu open so changing Comfy.Locale takes effect immediately.
         options.splice(-1, 0, null, {
-            content: label,
+            content: t(labelKey),
             callback: () => swapNode(this),
         });
     };

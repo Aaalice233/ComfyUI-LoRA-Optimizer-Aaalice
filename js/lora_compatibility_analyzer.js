@@ -1,4 +1,5 @@
 import { app } from "/scripts/app.js";
+import { t } from "./i18n.js";
 
 function findWidget(node, name) {
     return node.widgets ? node.widgets.find((w) => w.name === name) : null;
@@ -65,11 +66,11 @@ app.registerExtension({
                     // Update existing node
                     if (isLoader) {
                         populateLoaderNode(childNode, group);
-                        childNode.title = "Solo (Analyzer)";
+                        childNode.title = t("analyzerSolo");
                     } else {
                         mergeGroupNum++;
                         populateStackNode(childNode, group, i);
-                        childNode.title = `Group ${mergeGroupNum} (Analyzer)`;
+                        childNode.title = t("analyzerGroup", { index: mergeGroupNum });
                     }
                     newTracked.push(childNode.id);
                 } else {
@@ -86,11 +87,11 @@ app.registerExtension({
                     ];
 
                     if (isLoader) {
-                        created.title = "Solo (Analyzer)";
+                        created.title = t("analyzerSolo");
                         populateLoaderNode(created, group);
                     } else {
                         mergeGroupNum++;
-                        created.title = `Group ${mergeGroupNum} (Analyzer)`;
+                        created.title = t("analyzerGroup", { index: mergeGroupNum });
                         // Delay population to let widgets initialize (must exceed
                         // the 100ms initial-visibility timeout in lora_stack_dynamic.js)
                         setTimeout(() => populateStackNode(created, group, i), 200);
