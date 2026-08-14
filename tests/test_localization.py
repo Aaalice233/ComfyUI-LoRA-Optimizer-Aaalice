@@ -45,7 +45,7 @@ class LocalizationTests(unittest.TestCase):
                 for section in ("required", "optional"):
                     for name, value_schema in schema.get(section, {}).items():
                         base_name = name.rsplit("_", 1)[0] if name.rsplit("_", 1)[-1].isdigit() else name
-                        if base_name in {"lora_name", "tuner_data_file", "save_folder"}:
+                        if base_name in {"lora_name", "save_folder"}:
                             continue
                         values = value_schema[0] if isinstance(value_schema, tuple) and value_schema else None
                         if not isinstance(values, (list, tuple)) or not values or len(values) > 50:

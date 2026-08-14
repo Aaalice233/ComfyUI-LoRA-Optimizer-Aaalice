@@ -28,7 +28,20 @@
         "tooltip": "连接 LoRA Optimizer Settings；未连接时使用推荐默认值。"
       }
     },
-    "outputs": {}
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "CLIP"
+      },
+      "2": {
+        "name": "分析报告"
+      },
+      "3": {
+        "name": "LoRA 数据"
+      }
+    }
   },
   "LoRAOptimizerSettings": {
     "display_name": "LoRA 优化器设置",

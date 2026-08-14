@@ -28,7 +28,20 @@
         "tooltip": "Optional LoRA Optimizer Settings; recommended defaults are used when disconnected."
       }
     },
-    "outputs": {}
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Clip"
+      },
+      "2": {
+        "name": "Analysis Report"
+      },
+      "3": {
+        "name": "LoRA Data"
+      }
+    }
   },
   "LoRAOptimizerSettings": {
     "display_name": "LoRA Optimizer Settings",

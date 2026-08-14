@@ -3973,10 +3973,8 @@ class _LoRAMergeBase(ChunkedOptimizerMixin):
                     "metadata": entry.get("metadata", {}),
                     "_precomputed_diffs": entry.get("_precomputed_diffs", False),
                 }
-                # Virtual payload identity must survive normalization. A
-                # resolved loader filename reconciles captured runs with the
-                # file-based cache; the memoized hash avoids re-hashing large
-                # captured factor dictionaries for every tuner candidate.
+                # Preserve optional source identity supplied by preloaded
+                # adapter providers without recomputing large payload hashes.
                 for identity_key in ("_resolved_file_name", "_content_hash"):
                     if identity_key in entry:
                         normalized_item[identity_key] = entry[identity_key]
@@ -4194,7 +4192,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         logging.info(
             "[LoRA Optimizer Cache] HIT (%s) — applied %d MODEL + %d CLIP patches",
             cache_kind, len(model_patches), len(clip_patches))
-        return (new_model, new_clip, report, None, lora_data)
+        return (new_model, new_clip, report, lora_data)
 
     @staticmethod
     def _advanced_merge_kwargs(settings):
@@ -5540,7 +5538,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
         # Normalize stack format (standard tuples or preloaded dicts)
         if not lora_stack or len(lora_stack) == 0:
-            return (model, clip, "No LoRAs in stack.", None, None)
+            return (model, clip, "No LoRAs in stack.", None)
 
         config_cache_key = self._compute_cache_key(
             lora_stack, output_strength, clip_strength_multiplier,
@@ -5592,7 +5590,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         active_loras = [item for item in normalized_stack if item["strength"] != 0]
 
         if len(active_loras) == 0:
-            return (model, clip, "No LoRAs in stack (all zero strength or malformed).", None, None)
+            return (model, clip, "No LoRAs in stack (all zero strength or malformed).", None)
 
         # Resolve architecture preset from override or auto-detection
         preset_key, arch_preset = _resolve_arch_preset(
@@ -5635,7 +5633,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
                 f"  Applied directly with output_strength={resolved_output_strength}\n"
                 "\n" + "=" * 50
             )
-            return (new_model, new_clip, report, None, None)
+            return (new_model, new_clip, report, None)
 
         logging.info(f"[LoRA Optimizer] Starting analysis of {len(active_loras)} LoRAs")
         t_start = time.time()
@@ -5658,7 +5656,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         target_groups = self._build_target_groups(all_lora_prefixes, model_keys, clip_keys)
         if not target_groups:
             return (model, clip, "No compatible LoRA keys found. "
-                    "LoRAs may be incompatible with this model architecture.", None, None)
+                    "LoRAs may be incompatible with this model architecture.", None)
         progress_total = (len(target_groups) * 2 + 1) * 1000
         _standard_pbar = comfy.utils.ProgressBar(progress_total)
         self._progress_state = {
@@ -5713,7 +5711,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
 
         if prefix_count == 0:
             return (model, clip, "No compatible LoRA keys found. "
-                    "LoRAs may be incompatible with this model architecture.", None, None)
+                    "LoRAs may be incompatible with this model architecture.", None)
 
         # Log per-LoRA summaries
         for i, stat in enumerate(per_lora_stats):
@@ -6691,7 +6689,7 @@ class _LoRAOptimizerEngine(_LoRAMergeBase):
         self._progress_finish()
         logging.info(f"[LoRA Optimizer] Done! {processed_keys} keys processed ({time.time() - t_start:.1f}s total)")
 
-        return (new_model, new_clip, report, None, lora_data)
+        return (new_model, new_clip, report, lora_data)
 
 class LoRAOptimizerSettings:
     """All advanced controls for the single public optimizer node."""
@@ -6785,7 +6783,10 @@ class LoRAOptimizerSimple(_LoRAOptimizerEngine):
             },
         }
 
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING", "LORA_DATA")
+    RETURN_NAMES = ("model", "clip", "analysis_report", "lora_data")
     FUNCTION = "execute_simple"
+    CATEGORY = "LoRA Optimizer"
     DESCRIPTION = "Analyze, optimize, merge, cache, and apply a LoRA Manager stack."
 
     _SIMPLE_DEFAULTS = dict(

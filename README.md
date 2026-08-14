@@ -112,11 +112,9 @@ git pull
 
 安装或更新后必须重启 ComfyUI。
 
-## 🔄 精简版兼容性
+## 🔄 工作流结构
 
-当前版本删除了旧版 Optimizer、项目自带 LoRA Stack、Inline、AutoTuner、Compatibility Analyzer、公式、Estimator、WanVideo WIP、Hook 转换和模型提取等独立节点。旧工作流若引用这些节点会显示缺失；请改为 LoRA Manager → LoRA Optimizer，并把需要的高级参数集中到 LoRA Optimizer Settings。
-
-保留不变的是主 Optimizer 的 LoRA 合并数学、MODEL/CLIP patch 契约、`LORA_DATA` 和保存格式。
+使用 LoRA Manager 生成 `LORA_STACK`，连接 LoRA Optimizer；需要高级参数时连接 LoRA Optimizer Settings，需要导出文件时再连接 Save Merged LoRA。
 
 ## 🧪 验证
 

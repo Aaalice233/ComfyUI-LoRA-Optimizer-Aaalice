@@ -107,11 +107,9 @@ git pull
 
 Restart ComfyUI after installation or update.
 
-## 🔄 Slim-version compatibility
+## 🔄 Workflow structure
 
-The legacy Optimizer, built-in stack nodes, Inline flow, AutoTuner, Compatibility Analyzer, Formula, Estimator, WanVideo WIP, hook conversion, and model-extraction nodes have been removed. Workflows referencing them will show missing nodes; migrate to LoRA Manager → LoRA Optimizer and move advanced controls into LoRA Optimizer Settings.
-
-The core merge mathematics, MODEL/CLIP patch contract, `LORA_DATA`, and saved LoRA format remain unchanged.
+Build `LORA_STACK` with LoRA Manager and connect it to LoRA Optimizer. Connect LoRA Optimizer Settings only when advanced controls are needed, and connect Save Merged LoRA only when exporting a file.
 
 ## 🧪 Validation
 

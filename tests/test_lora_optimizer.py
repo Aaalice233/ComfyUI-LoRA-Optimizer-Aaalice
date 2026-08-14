@@ -814,6 +814,19 @@ class LoRASettingsNodeTests(unittest.TestCase):
         self.assertEqual(set(lora_optimizer.NODE_CLASS_MAPPINGS), {
             "LoRAOptimizerSimple", "LoRAOptimizerSettings", "SaveMergedLoRA"})
 
+    def test_main_optimizer_has_complete_node_metadata(self):
+        node = lora_optimizer.LoRAOptimizerSimple
+        self.assertEqual(node.CATEGORY, "LoRA Optimizer")
+        self.assertEqual(node.RETURN_TYPES, ("MODEL", "CLIP", "STRING", "LORA_DATA"))
+        self.assertEqual(node.RETURN_NAMES, ("model", "clip", "analysis_report", "lora_data"))
+
+    def test_removed_nodes_leave_no_legacy_input_sockets(self):
+        optimizer_inputs = lora_optimizer.LoRAOptimizerSimple.INPUT_TYPES()
+        settings_inputs = lora_optimizer.LoRAOptimizerSettings.INPUT_TYPES()
+        self.assertNotIn("tuner_data", optimizer_inputs.get("optional", {}))
+        self.assertNotIn("merge_settings", settings_inputs.get("optional", {}))
+        self.assertNotIn("merge_strategy_override", settings_inputs.get("optional", {}))
+
     def test_settings_include_separate_memory_and_persistent_cache_switches(self):
         inputs = lora_optimizer.LoRAOptimizerSettings.INPUT_TYPES()["required"]
         self.assertEqual(inputs["cache_patches"][1]["default"], "enabled")
@@ -1359,7 +1372,7 @@ class TestSingleLoraSkipsCompression(unittest.TestCase):
         ]
         opt = lora_optimizer.LoRAOptimizer()
         opt._get_model_keys = lambda m: {"alias_a": "layer.weight", "alias_b": "layer2.weight"}
-        _, _, _, _, lora_data = opt.optimize_merge(
+        _, _, _, lora_data = opt.optimize_merge(
             model, stack, 1.0, cache_patches="disabled", **kwargs)
         patches = {}
         for k, v in lora_data["model_patches"].items():
