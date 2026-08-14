@@ -58,7 +58,7 @@ def _install_stubs():
     lora.model_lora_keys_clip = lambda clip, mapping: {}
 
     model_management = types.ModuleType("comfy.model_management")
-    model_management.get_free_memory = lambda _device: 0
+    model_management.get_free_memory = lambda _device: 1 << 60
 
     weight_adapter = types.ModuleType("comfy.weight_adapter")
     weight_adapter_lora = types.ModuleType("comfy.weight_adapter.lora")
@@ -159,6 +159,30 @@ class LoRAOptimizerTests(unittest.TestCase):
     def setUp(self):
         self.optimizer = lora_optimizer.LoRAOptimizer()
         self.model = _make_model()
+
+    def test_oversized_group_falls_back_to_cpu_before_dense_expansion(self):
+        device = torch.device("cuda")
+        shape = (1024, 1024)
+        n_diffs = 9
+
+        with mock.patch.object(
+                lora_optimizer.comfy.model_management, "get_free_memory",
+                return_value=16 * 1024 * 1024):
+            selected = self.optimizer._select_group_compute_device(
+                device, shape, n_diffs)
+
+        self.assertEqual(selected.type, "cpu")
+
+    def test_group_stays_on_gpu_when_estimated_peak_fits(self):
+        device = torch.device("cuda")
+
+        with mock.patch.object(
+                lora_optimizer.comfy.model_management, "get_free_memory",
+                return_value=1024 * 1024 * 1024):
+            selected = self.optimizer._select_group_compute_device(
+                device, (1024, 1024), 9)
+
+        self.assertEqual(selected.type, "cuda")
 
     def test_lora_format_cache_avoids_repeated_detection(self):
         """After detecting a LoRA's format once, subsequent prefixes should reuse it."""

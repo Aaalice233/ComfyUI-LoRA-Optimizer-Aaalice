@@ -1010,6 +1010,7 @@ class _LoRAMergeBase:
     def __init__(self):
         self.loaded_loras = {}
         self._lora_format_cache = {}  # id(lora_dict) -> format_index (0-3)
+        self._cpu_fallback_reported = False
 
     def _track_model_identity(self, model, clip=None):
         """
@@ -1055,6 +1056,27 @@ class _LoRAMergeBase:
     def _get_compute_device():
         if torch.cuda.is_available():
             return torch.device("cuda")
+        return torch.device("cpu")
+
+    def _select_group_compute_device(self, device, target_shape, n_diffs):
+        """Keep oversized dense target groups off the GPU before they can OOM."""
+        if device is None or device.type == "cpu" or not target_shape:
+            return device
+
+        dense_bytes = math.prod(target_shape) * torch.float32.itemsize
+        # Analysis retains every contributor. Multi-LoRA SLERP may additionally
+        # need a packed copy plus working vectors, so budget for its true peak.
+        required_bytes = dense_bytes * max(n_diffs + 2, 2 * n_diffs + 3)
+        free_bytes = comfy.model_management.get_free_memory(device)
+        if required_bytes <= free_bytes * 0.85:
+            return device
+
+        if not self._cpu_fallback_reported:
+            logging.warning(
+                "[LoRA Optimizer] Oversized target groups exceed available VRAM "
+                "(estimated %.1f GiB, free %.1f GiB); processing them on CPU.",
+                required_bytes / (1024 ** 3), free_bytes / (1024 ** 3))
+            self._cpu_fallback_reported = True
         return torch.device("cpu")
 
     @staticmethod
@@ -2688,6 +2710,8 @@ class _LoRAMergeBase:
         except (AttributeError, RuntimeError, IndexError):
             return None
 
+        device = self._select_group_compute_device(
+            device, target_shape, len(active_loras))
         use_gpu = device is not None and device.type != "cpu"
         aggregated = {}
         ranks = {}
@@ -2925,6 +2949,7 @@ class _LoRAMergeBase:
                     "target_shape": target_shape,
                     "storage_dtype": storage_dtype,
                     "skip_count": skip_count,
+                    "compute_device": device if device is not None else torch.device("cpu"),
                 }
             return None
 
@@ -2963,6 +2988,7 @@ class _LoRAMergeBase:
                 "target_shape": target_shape,
                 "storage_dtype": storage_dtype,
                 "skip_count": skip_count,
+                "compute_device": device if device is not None else torch.device("cpu"),
             }
 
         filtered = self._apply_conflict_modes(
@@ -2985,6 +3011,7 @@ class _LoRAMergeBase:
             "target_shape": target_shape,
             "storage_dtype": storage_dtype,
             "skip_count": skip_count,
+            "compute_device": device if device is not None else torch.device("cpu"),
         }
 
     def _get_lora_key_info(self, lora_dict, key_prefix):
@@ -3201,7 +3228,9 @@ class _LoRAMergeBase:
             # If shape doesn't match, skip
             return None
 
-        diff = diff * scale
+        # A large DiT projection can be hundreds of MB in fp32. Scaling out of
+        # place briefly duplicates it and can OOM after the matmul already fit.
+        diff.mul_(scale)
         if to_cpu and device is not None and device.type != "cpu":
             return diff.cpu()
         return diff
@@ -4387,7 +4416,7 @@ class _LoRAMergeBase:
             for idx in range(len(diffs_with_weights)):
                 diff, weight = diffs_with_weights[idx]
                 diffs_with_weights[idx] = None  # Free input diff early
-                result.add_(diff.to(device=dev, dtype=torch.float32) * (weight / total_weight))
+                result.add_(diff.to(device=dev, dtype=torch.float32), alpha=weight / total_weight)
             if selfish_additions is not None:
                 result = result + selfish_additions.to(device=result.device, dtype=torch.float32)
             result = result.to(dtype)
@@ -4398,7 +4427,7 @@ class _LoRAMergeBase:
             for idx in range(len(diffs_with_weights)):
                 diff, weight = diffs_with_weights[idx]
                 diffs_with_weights[idx] = None  # Free input diff early
-                result.add_(diff.to(device=dev, dtype=torch.float32) * weight)
+                result.add_(diff.to(device=dev, dtype=torch.float32), alpha=weight)
             if selfish_additions is not None:
                 result = result + selfish_additions.to(device=result.device, dtype=torch.float32)
             result = result.to(dtype)
@@ -4417,7 +4446,7 @@ class _LoRAMergeBase:
             for idx in range(len(diffs_with_weights)):
                 diff, weight = diffs_with_weights[idx]
                 diffs_with_weights[idx] = None  # Free input diff early
-                result.add_(diff.to(device=dev, dtype=torch.float32) * weight * scale)
+                result.add_(diff.to(device=dev, dtype=torch.float32), alpha=weight * scale)
             if selfish_additions is not None:
                 result = result + selfish_additions.to(device=result.device, dtype=torch.float32)
             result = result.to(dtype)
@@ -6079,6 +6108,7 @@ class LoRAOptimizer(_LoRAMergeBase):
         target_key = prepared["target_key"]
         is_clip = prepared["is_clip"]
         raw_n = prepared["raw_n_loras"]
+        group_device = prepared["compute_device"]
 
         if len(diffs) == 0:
             if skip_count > 0 or raw_n > 0:
@@ -6092,9 +6122,10 @@ class LoRAOptimizer(_LoRAMergeBase):
         per_lora_norm_sq = {}
         bases = {}
         for i, diff in diffs.items():
-            norm_sq = diff.float().square().sum().item()
+            norm = torch.linalg.vector_norm(diff.float()).item()
+            norm_sq = norm * norm
             per_lora_norm_sq[i] = norm_sq
-            display_l2 = math.sqrt(norm_sq) * abs(active_loras[i]["strength"])
+            display_l2 = norm * abs(active_loras[i]["strength"])
             partial_stats.append((i, rank_sums.get(i, 0), display_l2, norm_sq))
             bases[i] = self._compute_subspace_basis(diff, rank_hint=rank_sums.get(i, 1))
 
@@ -6107,7 +6138,7 @@ class LoRAOptimizer(_LoRAMergeBase):
                 diff_j = diffs[j] if eff_strengths[j] >= 0 else -diffs[j]
                 pair_conflicts[(i, j)] = self._sample_pair_metrics(
                     diff_i, diff_j, basis_a=bases.get(i), basis_b=bases.get(j),
-                    device=device
+                    device=group_device if group_device.type != "cpu" else None
                 )
 
         magnitude_samples = []
@@ -6116,13 +6147,13 @@ class LoRAOptimizer(_LoRAMergeBase):
         sample_dev = diffs[lora_indices[0]].device
         mag_g = torch.Generator(device=sample_dev).manual_seed(seed)
         for i in lora_indices:
-            flat = diffs[i].flatten().abs().float() * abs(eff_strengths[i])
-            del diffs[i]
+            flat = diffs.pop(i).flatten()
             n = flat.numel()
             if n > n_magnitude_samples:
                 indices = torch.randint(0, n, (n_magnitude_samples,),
                                         device=sample_dev, generator=mag_g)
                 flat = flat[indices]
+            flat = flat.abs().float() * abs(eff_strengths[i])
             magnitude_samples.append(flat.cpu())
 
         return (
@@ -8596,9 +8627,17 @@ class LoRAOptimizer(_LoRAMergeBase):
             diffs_list = []
             preserve_list = []
             storage_dtype = prepared["storage_dtype"]
-            for i in sorted(prepared["diffs"].keys()):
-                diffs_list.append((prepared["diffs"][i], prepared["eff_strengths"][i]))
+            group_device = prepared["compute_device"]
+            group_svd_device = (resolved_svd_device
+                                if group_device.type != "cpu" else None)
+            prepared_diffs = prepared["diffs"]
+            diff_indices = sorted(prepared_diffs.keys())
+            for i in diff_indices:
+                diffs_list.append((prepared_diffs[i], prepared["eff_strengths"][i]))
                 preserve_list.append(bool(active_loras[i].get("preserve", False)))
+            # _merge_diffs drops consumed inputs as it goes. Remove this second
+            # owner so those large dense tensors can actually be released.
+            prepared_diffs.clear()
 
             if len(diffs_list) <= 1 and pf_mode != "weighted_sum":
                 pf_mode = "weighted_sum"
@@ -8608,8 +8647,7 @@ class LoRAOptimizer(_LoRAMergeBase):
             sp_gen = None
             if sparsification != "disabled":
                 seed = int(hashlib.sha256(label_prefix.encode()).hexdigest(), 16) % (2**63)
-                gen_device = compute_device if compute_device is not None else torch.device('cpu')
-                sp_gen = torch.Generator(device=gen_device)
+                sp_gen = torch.Generator(device=group_device)
                 sp_gen.manual_seed(seed)
 
             # Reuse the exact per-LoRA norms from Pass 1 instead of re-reading
@@ -8617,7 +8655,6 @@ class LoRAOptimizer(_LoRAMergeBase):
             # candidate). Fallback covers conflict-mode masking (differs by
             # refinement) and prefixes missing from the analysis stats.
             pf_norm_sq = pf.get("per_lora_norm_sq") or {}
-            diff_indices = sorted(prepared["diffs"].keys())
             if (diff_indices and not stack_has_conflict_modes
                     and all(i in pf_norm_sq for i in diff_indices)):
                 input_norms_mean = (
@@ -8644,16 +8681,15 @@ class LoRAOptimizer(_LoRAMergeBase):
             merged_diff = self._merge_diffs(
                 diffs_list, pf_mode,
                 density=pf_density, majority_sign_method=pf_sign,
-                compute_device=compute_device,
+                compute_device=group_device,
                 sparsification=sparsification,
                 sparsification_density=sparsification_density,
                 sparsification_generator=sp_gen,
                 merge_refinement=pf_quality,
                 dare_dampening=dare_dampening,
-                # Keep the result on the compute device: the norm and dtype
-                # downcast below run there, so the CPU transfer (when needed)
-                # moves half the bytes and skips a full CPU-side read
-                keep_on_gpu=True,
+                # Keep the result on the selected group device: the norm and
+                # dtype downcast below run there before any final transfer.
+                keep_on_gpu=group_device.type != "cpu",
                 preserve_flags=preserve_list,
             )
             if _merge_prof is not None:
@@ -8706,11 +8742,11 @@ class LoRAOptimizer(_LoRAMergeBase):
             # Move off-GPU now unless deferred for refusion scoring, kept by
             # the VRAM budget, or a GPU-side SVD is about to consume it anyway
             if (merged_diff.is_cuda and not should_keep and not defer_gpu
-                    and not (should_compress and resolved_svd_device is not None)):
+                    and not (should_compress and group_svd_device is not None)):
                 merged_diff = merged_diff.cpu()
             if should_compress:
                 _t_comp = _prof_t() if _merge_prof is not None else 0.0
-                patch = self._compress_to_lowrank(merged_diff, compress_rank, svd_device=resolved_svd_device)
+                patch = self._compress_to_lowrank(merged_diff, compress_rank, svd_device=group_svd_device)
                 if _merge_prof is not None:
                     _prof_add("compress", _prof_t() - _t_comp)
                 if patch is None:
