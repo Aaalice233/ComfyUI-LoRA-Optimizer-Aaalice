@@ -54,17 +54,15 @@ class LocalizationTests(unittest.TestCase):
                         options = definitions[node_id]["inputs"][name].get("options", {})
                         self.assertEqual(set(options), expected, (language, node_id, name))
 
-    def test_visible_extension_labels_resolve_through_i18n(self):
-        i18n = (ROOT / "js" / "i18n.js").read_text(encoding="utf-8")
-        bridge = (ROOT / "js" / "lora_optimizer_bridge.js").read_text(encoding="utf-8")
-        stack = (ROOT / "js" / "lora_stack_dynamic.js").read_text(encoding="utf-8")
-        analyzer = (ROOT / "js" / "lora_compatibility_analyzer.js").read_text(encoding="utf-8")
-        self.assertIn('getSettingValue?.("Comfy.Locale")', i18n)
-        self.assertIn('content: t(labelKey)', bridge)
-        self.assertIn('t("removeLora"', stack)
-        self.assertIn('t("moveLoraUp"', stack)
-        self.assertIn('t("analyzerSolo")', analyzer)
-        self.assertIn('t("analyzerGroup"', analyzer)
+    def test_only_the_three_product_nodes_are_registered(self):
+        self.assertEqual(set(lora_optimizer.NODE_CLASS_MAPPINGS), {
+            "LoRAOptimizerSimple", "LoRAOptimizerSettings", "SaveMergedLoRA"})
+
+    def test_persistent_cache_switch_is_fully_localized(self):
+        for language, definitions in self.locales.items():
+            entry = definitions["LoRAOptimizerSettings"]["inputs"]["persistent_cache"]
+            self.assertTrue(entry["name"].strip(), language)
+            self.assertTrue(entry["tooltip"].strip(), language)
 
 
 if __name__ == "__main__":

@@ -110,14 +110,11 @@ class InterruptControllerTests(unittest.TestCase):
             optimizer.optimize_merge(None, [], 1.0)
         self.assertEqual(list(optimizer._merge_cache), ["sentinel"])
 
-    def test_save_nodes_check_native_interrupt_before_writing(self):
+    def test_save_node_checks_native_interrupt_before_writing(self):
         self.model_management.throw_exception_if_processing_interrupted = (
             lambda: (_ for _ in ()).throw(NativeInterrupt("cancel")))
         with self.assertRaises(NativeInterrupt):
             lora_optimizer.SaveMergedLoRA().save_lora(None, "", "cancelled")
-        with self.assertRaises(NativeInterrupt):
-            lora_optimizer.SaveTunerData().save_tuner_data(
-                {}, "", "cancelled.json")
 
     def test_tiled_merge_interrupts_between_rows(self):
         checks = {"n": 0}
@@ -190,30 +187,6 @@ class InterruptControllerTests(unittest.TestCase):
             chunked_merge.chunked_randomized_svd(
                 lambda start, end, _device: dense[start:end], dense.shape, 4,
                 torch.device("cpu"), 8, controller)
-
-    def test_diff_cache_prefetch_wait_polls_interrupt(self):
-        checks = {"n": 0}
-
-        def checker():
-            checks["n"] += 1
-            if checks["n"] >= 2:
-                raise NativeInterrupt("cancel")
-
-        self.model_management.throw_exception_if_processing_interrupted = checker
-        controller = lora_optimizer.InterruptController()
-        cache = lora_optimizer._DiffCache("disabled", interrupt_controller=controller)
-
-        stop = threading.Event()
-        thread = threading.Thread(target=lambda: stop.wait(1.0), daemon=True)
-        thread.start()
-        cache._prefetch_thread = thread
-        started = time.monotonic()
-        with self.assertRaises(NativeInterrupt):
-            cache._wait_prefetch()
-        elapsed = time.monotonic() - started
-        stop.set()
-        thread.join()
-        self.assertLess(elapsed, 0.25)
 
 
 if __name__ == "__main__":

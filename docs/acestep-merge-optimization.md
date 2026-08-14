@@ -337,8 +337,7 @@ Source for MERGE-LORA.py: [DisturbingTheField HuggingFace repos](https://hugging
 
 ### Merging ACE-Step LoRAs
 
-1. Load LoRAs into a **LoRA Stack** node and connect to a **LoRA Optimizer** node
-   (or use **LoRA AutoTuner** for automatic quality optimization)
+1. Build the stack with **LoRA Manager** and connect its `LORA_STACK` output to **LoRA Optimizer**
 2. Architecture preset will auto-detect as `acestep_dit`
 3. Use `per_prefix` optimization mode (default)
 4. Keep `normalize_keys` enabled (handles v1.0/v1.5/Kohya/PEFT format differences)
@@ -351,7 +350,7 @@ be diluted by naive averaging.
 
 ### If voice quality degrades (vocal + music merges)
 
-- Try `merge_strategy_override: slerp` to force SLERP on all prefixes
+- Keep `strategy_set: full` so compatible prefixes can use SLERP automatically
 - Reduce the music LoRA's strength relative to the vocal LoRA
 - Check the merge report — cross_attn prefixes should show SLERP, not TIES
 

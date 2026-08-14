@@ -1,1 +1,0 @@
-[LoRA Optimizer](https://github.com/ethanfel/ComfyUI-LoRA-Optimizer) | MIT License | Originally based on [ComfyUI-ZImage-LoRA-Merger](https://github.com/DanrisiUA/ComfyUI-ZImage-LoRA-Merger) by DanrisiUA
